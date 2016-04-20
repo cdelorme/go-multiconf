@@ -37,6 +37,8 @@ _Setting a `Description` enables the builtin `help` support which captures `help
 
 	config.Example("-o /path/to/output")
 
+If in validating your configuration (_such as during post-processing_), you can call `Help()` to print usage information without automatically closing the application (whether it closes when calling the public method is up to your code).
+
 Register cli options and environment variables like this:
 
 	config.Env("name", "optional description of name", "MYAPP_CONFIG_NAME")
