@@ -127,6 +127,26 @@ func (self *Config) to(data ...map[string]interface{}) {
 	}
 }
 
+func (self *Config) set(cursor map[string]interface{}, key string, value interface{}) {
+	keys := strings.Split(key, ".")
+	for i, k := range keys {
+		if i+1 == len(keys) {
+			cursor[k] = value
+		} else {
+			if _, ok := cursor[k]; !ok {
+				cursor[k] = map[string]interface{}{}
+			}
+			if v, ok := cursor[k].(map[string]interface{}); !ok {
+				t := map[string]interface{}{}
+				cursor[k] = t
+				cursor = t
+			} else {
+				cursor = v
+			}
+		}
+	}
+}
+
 func (self *Config) parseEnvs() map[string]interface{} {
 	vars := make(map[string]interface{})
 
