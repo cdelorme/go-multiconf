@@ -149,13 +149,11 @@ func (self *Config) set(cursor map[string]interface{}, key string, value interfa
 
 func (self *Config) parseEnvs() map[string]interface{} {
 	vars := make(map[string]interface{})
-
 	for _, e := range self.envs {
 		if v := os.Getenv(e.Name); len(v) > 0 {
-			vars[e.Key] = v
+			self.set(vars, e.Key, v)
 		}
 	}
-
 	return vars
 }
 
@@ -179,7 +177,6 @@ func (self *Config) help(behave bool) {
 
 func (self *Config) parseOptions() map[string]interface{} {
 	vars := make(map[string]interface{})
-
 	var skip bool
 	for idx, arg := range os.Args {
 		if len(self.Description) > 0 && (arg == "help" || arg == "-h" || arg == "--help") {
@@ -191,25 +188,24 @@ func (self *Config) parseOptions() map[string]interface{} {
 		} else if arg == "--" {
 			break
 		}
-
 		if strings.HasPrefix(arg, "--") {
 			for _, long := range self.long {
 				if strings.HasPrefix(arg, "--"+long.Flag) {
 					if s := strings.Split(arg, "="); len(s) == 2 {
 						if len(s[1]) > 0 {
-							vars[long.Option.Key] = s[1]
+							self.set(vars, long.Option.Key, s[1])
 						} else {
-							vars[long.Option.Key] = true
+							self.set(vars, long.Option.Key, true)
 						}
 					} else if idx+1 < len(os.Args) {
 						if os.Args[idx+1] != "--" && (!strings.HasPrefix(os.Args[idx+1], "-") || long.Greedy) {
 							skip = true
-							vars[long.Option.Key] = os.Args[idx+1]
+							self.set(vars, long.Option.Key, os.Args[idx+1])
 						} else {
-							vars[long.Option.Key] = true
+							self.set(vars, long.Option.Key, true)
 						}
 					} else {
-						vars[long.Option.Key] = true
+						self.set(vars, long.Option.Key, true)
 					}
 				}
 			}
@@ -221,18 +217,18 @@ func (self *Config) parseOptions() map[string]interface{} {
 					if string(c) == short.Flag {
 						if idc == (len(s) - 1) {
 							if idx+1 < len(os.Args) && os.Args[idx+1] != "--" && (!strings.HasPrefix(os.Args[idx+1], "-") || short.Greedy) {
-								vars[short.Option.Key] = os.Args[idx+1]
+								self.set(vars, short.Option.Key, os.Args[idx+1])
 								skip = true
 								break
 							} else {
 								vars[short.Option.Key] = true
 							}
 						} else {
-							vars[short.Option.Key] = string(s[idc+1:])
+							self.set(vars, short.Option.Key, string(s[idc+1:]))
 							if !short.Greedy {
 								for _, si := range self.short {
 									if string(s[idc+1]) == si.Flag {
-										vars[short.Option.Key] = true
+										self.set(vars, short.Option.Key, true)
 										break
 									}
 								}
@@ -250,7 +246,6 @@ func (self *Config) parseOptions() map[string]interface{} {
 			}
 		}
 	}
-
 	return vars
 }
 
