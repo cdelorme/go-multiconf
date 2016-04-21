@@ -49,6 +49,12 @@ You can even add keys with depth via period delimited values:
 	config.Env("try.depth", "demo depth", "MYAPP_CONFIG_DEPTH")
 	config.Option("try.depth", "demo depth", "-d", "--depth")
 
+For cases where you need a default value, you can use the `Default()` method:
+
+	config.Default("Name", "something")
+
+_This gets applied before anything else, which means all three inputs have a chance to override it._
+
 Finally, you can load all configuration in a single command (_optionally supplying alternative file paths_):
 
 	config.Load()
