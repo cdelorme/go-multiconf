@@ -44,6 +44,11 @@ Register cli options and environment variables like this:
 	config.Env("name", "optional description of name", "MYAPP_CONFIG_NAME")
 	config.Option("name", "optional description of name", "-n", "--name")
 
+You can even add keys with depth via period delimited values:
+
+	config.Env("try.depth", "demo depth", "MYAPP_CONFIG_DEPTH")
+	config.Option("try.depth", "demo depth", "-d", "--depth")
+
 Finally, you can load all configuration in a single command (_optionally supplying alternative file paths_):
 
 	config.Load()
