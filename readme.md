@@ -72,10 +72,6 @@ Configuration is prioritized in that order by standards; meaning cli options are
 
 Being cross-platform friendly this system looks in relative paths, `%APPDATA%`, and `XDG_CONFIG_DIRS` (or `$HOME`), when seeking configuration for the application.  _We've skipped OSX because most `~/Library/` and `/Library/` entries are for Cocoa and are generally not standard text._
 
-**Only json configuration files are supported,** but this implementation trims comments (`//`, `#`, and `/**/`).  _If you are using `ini` you may as well switch to environment variables which are less ambiguous with whitespace, and let's be honest nobody likes writing `yaml`._
-
-Environment variables are strings and will be loaded as such by `json.Unmarshal` when cast into your configuration struct.
-
 A fully [posix compliant `getopt` implementation](https://en.wikipedia.org/wiki/Getopt) is supplied, with support for an explicit capture character (`:`) to always capture the content after the flag while safely dealing with whitespace.
 
 Intelligent automatically generated help messages are provided, depending on whether `Description` has been set on the `Config` instance.  This allows an intuitive activation and will capture `-h`, `--help`, and simply `help`, to display generated help, followed by running `os.Exit(0)`.
