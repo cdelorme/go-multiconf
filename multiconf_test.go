@@ -315,3 +315,13 @@ func TestHelp(_ *testing.T) {
 	o := Config{}
 	o.Help()
 }
+
+func TestDefault(t *testing.T) {
+	t.Parallel()
+	o := &Config{}
+	o.Default("test", "value")
+	o.Default("verify.depth", true)
+	if _, ok := o.defaults["verify"]; !ok || o.defaults["test"] != "value" {
+		t.FailNow()
+	}
+}

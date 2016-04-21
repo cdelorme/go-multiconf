@@ -97,7 +97,7 @@ type Config struct {
 	long          []parse
 	short         []parse
 	envs          []env
-	c             chan os.Signal
+	defaults      map[string]interface{}
 }
 
 func (self *Config) merge(maps ...map[string]interface{}) map[string]interface{} {
@@ -319,4 +319,11 @@ func (self *Config) Example(example string) {
 
 func (self *Config) Help() {
 	self.help(false)
+}
+
+func (self *Config) Default(key string, value interface{}) {
+	if self.defaults == nil {
+		self.defaults = map[string]interface{}{}
+	}
+	self.set(self.defaults, key, value)
 }
