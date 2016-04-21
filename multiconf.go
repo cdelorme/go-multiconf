@@ -277,6 +277,7 @@ func (self *Config) Load(p ...string) {
 	maps = append(maps, self.parseOptions())
 	maps = append(maps, self.parseEnvs())
 	maps = append(maps, self.loadConfig())
+	maps = append(maps, self.defaults)
 
 	self.to(maps...)
 }

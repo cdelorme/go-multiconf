@@ -313,12 +313,13 @@ func TestLoad(t *testing.T) {
 	c := &mockConfig{}
 	o := Config{Logger: l, Configuration: c}
 
-	// override readfile data and load
+	// set a default, override readfile, and verify load
+	o.Default("name", "casey")
 	filedata = `{}`
 	o.Load()
 
 	// verify log output
-	if !strings.HasPrefix(l.Store, "Configuration: correct") {
+	if c.Name != "casey" || !strings.HasPrefix(l.Store, "Configuration: correct") {
 		t.FailNow()
 	}
 }
