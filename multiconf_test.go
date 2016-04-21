@@ -126,15 +126,21 @@ func TestParseEnv(t *testing.T) {
 
 	// register some env vars
 	o.Env("test", "", "MULTICONF_TEST_ENVVAR")
+	o.Env("testing.depth", "", "MULTICONF_TEST_DEPTH")
+	o.Env("testing.depth.deeper", "", "MULTICONF_TEST_DEEPER")
 
 	// set env vars for testing parse
-	os.Setenv("MULTICONF_TEST_ENVVAR", "nope")
+	os.Setenv("MULTICONF_TEST_ENVVAR", "narp")
+	os.Setenv("MULTICONF_TEST_DEPTH", "yarp")
+	os.Setenv("MULTICONF_TEST_DEEPER", "yarp")
 
 	// parse env
 	v := o.parseEnvs()
-
 	// verify results
-	if v["test"] != "nope" {
+	if v["test"] != "narp" {
+		t.FailNow()
+	}
+	if _, ok := v["testing"]; !ok {
 		t.FailNow()
 	}
 }
@@ -171,6 +177,8 @@ func TestParseOptions(t *testing.T) {
 	o.Option("fourth", "", "--fourth", "-4:")
 	o.Option("fifth", "", "--fifth", "-5")
 	o.Option("sixth", "", "-6")
+	o.Option("test.depth", "", "--depth")
+	o.Option("test.depth.deeper", "", "--deeper")
 
 	// test long arguments
 	os.Args = []string{"--first=hasvalue", "--second=", "--third", "misc", "ignored", "--fourth", "--greedy", "--first", "--fifth"}
@@ -190,6 +198,13 @@ func TestParseOptions(t *testing.T) {
 	os.Args = []string{"--greedy", "--", "--greedy=skipped"}
 	v = o.parseOptions()
 	if v["greedy"] != true {
+		t.FailNow()
+	}
+
+	// test depth support
+	os.Args = []string{"--depth", "--deeper"}
+	v = o.parseOptions()
+	if _, ok := v["test"]; !ok {
 		t.FailNow()
 	}
 
