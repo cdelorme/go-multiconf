@@ -121,6 +121,18 @@ func TestEnv(t *testing.T) {
 	}
 }
 
+func TestSet(t *testing.T) {
+	t.Parallel()
+	o := &Config{}
+	m := map[string]interface{}{}
+
+	o.set(m, "key", "value")
+	o.set(m, "go.deeper", 123)
+	if _, ok := m["go"]; !ok || m["key"] != "value" {
+		t.FailNow()
+	}
+}
+
 func TestParseEnv(t *testing.T) {
 	o := Config{}
 
