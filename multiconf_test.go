@@ -3,9 +3,11 @@ package multiconf
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -22,14 +24,16 @@ func (self *mockLogger) Info(f string, args ...interface{})  { self.Store = fmt.
 func (self *mockLogger) Debug(f string, args ...interface{}) { self.Store = fmt.Sprintf(f, args...) }
 
 type mockConfig struct {
-	Key      int    `json:"key,omitempty"`
-	Name     string `json:"name,omitempty"`
-	Password string `json:"-"`
+	sync.Mutex
+	Key      int     `json:"key,omitempty"`
+	Final    bool    `json:"Final,omitempty"`
+	Name     string  `json:"name,omitempty"`
+	Password string  `json:"-"`
+	Number   float32 `json:"number,omitempty"`
 	Extra    struct {
 		Data    int  `json:"data,omitempty"`
 		Correct bool `json:"correct,omitempty"`
 	} `json:"extra,omitempty"`
-	Final bool `json:"Final,omitempty"`
 }
 
 func (self mockConfig) String() string                { return "correct" }
@@ -40,6 +44,7 @@ func init() {
 	stdout = ioutil.Discard
 	exit = func(c int) { code = c }
 	readfile = func(name string) ([]byte, error) { return []byte(filedata), fileerror }
+	print = func(_ io.Writer, _ string, _ ...interface{}) (int, error) { return 0, nil }
 }
 
 func TestPlacebo(t *testing.T) {
@@ -72,7 +77,7 @@ func TestInitLoad(t *testing.T) {
 	}
 }
 
-func TestMerge(t *testing.T) {
+func TestConfigMerge(t *testing.T) {
 	t.Parallel()
 	o := Config{}
 
@@ -90,11 +95,28 @@ func TestMerge(t *testing.T) {
 	}
 }
 
-func TestTo(t *testing.T) {
+func TestConfigCast(t *testing.T) {
+	t.Parallel()
+	o := &Config{Configuration: &mockConfig{}}
+
+	// prepare matching map & verify correct types after
+	m := map[string]interface{}{"name": "casey", "number": "15.9", "Final": "true", "key": "12"}
+	o.cast(m)
+	t.Logf("%#v\n", m)
+	if _, e := m["number"].(float64); !e {
+		t.FailNow()
+	} else if _, e := m["Final"].(bool); !e {
+		t.FailNow()
+	} else if _, e := m["key"].(float64); !e {
+		t.FailNow()
+	}
+}
+
+func TestConfigTo(t *testing.T) {
 	t.Parallel()
 	o := Config{Logger: &mockLogger{}}
 
-	// set mock configuration
+	// set config
 	c := &mockConfig{}
 	o.Configuration = c
 
@@ -105,23 +127,7 @@ func TestTo(t *testing.T) {
 	}
 }
 
-func TestEnv(t *testing.T) {
-	t.Parallel()
-
-	o := Config{}
-
-	// good, bad, bad
-	o.Env("env", "", "ENV")
-	o.Env("", "", "ENV")
-	o.Env("env", "", "")
-
-	if len(o.envs) != 1 {
-		t.Logf("%+v\n", o)
-		t.FailNow()
-	}
-}
-
-func TestSet(t *testing.T) {
+func TestConfigSet(t *testing.T) {
 	t.Parallel()
 	o := &Config{}
 	m := map[string]interface{}{}
@@ -133,7 +139,7 @@ func TestSet(t *testing.T) {
 	}
 }
 
-func TestParseEnv(t *testing.T) {
+func TestConfigParseEnvs(t *testing.T) {
 	o := Config{}
 
 	// register some env vars
@@ -157,29 +163,55 @@ func TestParseEnv(t *testing.T) {
 	}
 }
 
-func TestOption(t *testing.T) {
+func TestConfigPrivateHelp(t *testing.T) {
 	t.Parallel()
-
 	o := Config{}
+	// @todo something
+	// test with nothing
+	o.Help()
 
-	// good
-	o.Option("option", "", "-o", "--option")
-	o.Option("option", "", "o", "option")
-	o.Option("option", "", "op")
+	// test with description
+	o.Description = "Some Application"
+	o.Help()
 
-	// bad
-	o.Option("", "-o", "", "--option")
-	o.Option("option", "")
+	// test with examples
+	o.Example("Test")
+	o.Help()
 
-	// verify by count
-	if len(o.long) != 3 || len(o.short) != 2 {
-		t.FailNow()
-	}
 }
 
-func TestParseOptions(t *testing.T) {
+func TestConfigParseOptions(t *testing.T) {
 	o := &Config{}
 	var v map[string]interface{}
+
+	// test without description
+	os.Args = []string{"--help"}
+	code = 1
+	v = o.parseOptions()
+	if code != 0 {
+		t.FailNow()
+	}
+
+	// test all combinations with description
+	o.Description = "Test"
+	os.Args = []string{"help"}
+	code = 1
+	v = o.parseOptions()
+	if code != 0 {
+		t.FailNow()
+	}
+	os.Args = []string{"-h"}
+	code = 1
+	v = o.parseOptions()
+	if code != 0 {
+		t.FailNow()
+	}
+	os.Args = []string{"--help"}
+	code = 1
+	v = o.parseOptions()
+	if code != 1 {
+		t.FailNow()
+	}
 
 	// register flags of all types
 	o.Option("first", "", "--first", "-1")
@@ -240,38 +272,9 @@ func TestParseOptions(t *testing.T) {
 	if _, ok := v["first"]; ok || v["fourth"] != "--first" {
 		t.FailNow()
 	}
-
-	// test all combinations of help
-	o.Description = "Test"
-	o.Example("Test")
-	os.Args = []string{"help"}
-	code = 1
-	v = o.parseOptions()
-	if code != 0 {
-		t.FailNow()
-	}
-	os.Args = []string{"-h"}
-	code = 1
-	v = o.parseOptions()
-	if code != 0 {
-		t.FailNow()
-	}
-	os.Args = []string{"--help"}
-	code = 1
-	v = o.parseOptions()
-	if code != 0 {
-		t.FailNow()
-	}
-	o.Description = ""
-	os.Args = []string{"--help"}
-	code = 1
-	v = o.parseOptions()
-	if code != 1 {
-		t.FailNow()
-	}
 }
 
-func TestLoadConfig(t *testing.T) {
+func TestConfigLoadConfig(t *testing.T) {
 	l := &mockLogger{}
 	o := Config{Logger: l}
 	v := map[string]interface{}{}
@@ -308,13 +311,12 @@ func TestLoadConfig(t *testing.T) {
 	}
 }
 
-func TestLoad(t *testing.T) {
+func TestConfigLoad(t *testing.T) {
 	l := &mockLogger{}
-	c := &mockConfig{}
+	c := &mockConfig{Name: "casey"}
 	o := Config{Logger: l, Configuration: c}
 
-	// set a default, override readfile, and verify load
-	o.Default("name", "casey")
+	// override readfile, and verify load
 	filedata = `{}`
 	o.Load()
 
@@ -324,17 +326,50 @@ func TestLoad(t *testing.T) {
 	}
 }
 
-func TestHelp(_ *testing.T) {
-	o := Config{}
-	o.Help()
-}
-
-func TestDefault(t *testing.T) {
+func TestConfigEnv(t *testing.T) {
 	t.Parallel()
-	o := &Config{}
-	o.Default("test", "value")
-	o.Default("verify.depth", true)
-	if _, ok := o.defaults["verify"]; !ok || o.defaults["test"] != "value" {
+
+	o := Config{}
+
+	// good, bad, bad
+	o.Env("env", "", "ENV")
+	o.Env("", "", "ENV")
+	o.Env("env", "", "")
+
+	if len(o.envs) != 1 {
+		t.Logf("%+v\n", o)
 		t.FailNow()
 	}
+}
+
+func TestConfigOption(t *testing.T) {
+	t.Parallel()
+
+	o := Config{}
+
+	// good
+	o.Option("option", "", "-o", "--option")
+	o.Option("option", "", "o", "option")
+	o.Option("option", "", "op")
+
+	// bad
+	o.Option("", "-o", "", "--option")
+	o.Option("option", "")
+
+	// verify by count
+	if len(o.long) != 3 || len(o.short) != 2 {
+		t.FailNow()
+	}
+}
+
+func TestConfigExample(t *testing.T) {
+	t.Parallel()
+	o := &Config{}
+	o.Example("Whatever")
+}
+
+func TestConfigPublicHelp(t *testing.T) {
+	t.Parallel()
+	o := &Config{}
+	o.Help()
 }

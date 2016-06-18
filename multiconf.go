@@ -8,8 +8,15 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"reflect"
+	"strconv"
 	"strings"
 )
+
+type locker interface {
+	Lock()
+	Unlock()
+}
 
 type configuration interface {
 	GoString() string
@@ -20,16 +27,13 @@ type logger interface {
 	Debug(string, ...interface{})
 }
 
-var exts = []string{"", ".json", ".conf"}
-var paths []string
-var appName string
+var print func(io.Writer, string, ...interface{}) (int, error) = fmt.Fprintf
 var stdout io.Writer = os.Stdout
 var exit = os.Exit
 var readfile = ioutil.ReadFile
-
-func init() {
-	load()
-}
+var exts = []string{"", ".json", ".conf"}
+var paths []string
+var appName string
 
 func load() {
 	paths = []string{}
@@ -68,6 +72,10 @@ func load() {
 	}
 }
 
+func init() {
+	load()
+}
+
 type option struct {
 	Key         string
 	Description string
@@ -97,7 +105,6 @@ type Config struct {
 	long          []parse
 	short         []parse
 	envs          []env
-	defaults      map[string]interface{}
 }
 
 func (self *Config) merge(maps ...map[string]interface{}) map[string]interface{} {
@@ -117,9 +124,33 @@ func (self *Config) merge(maps ...map[string]interface{}) map[string]interface{}
 	return m
 }
 
+func (self *Config) cast(m map[string]interface{}) {
+	d := reflect.ValueOf(self.Configuration).Elem()
+	for i := 0; i < d.NumField(); i++ {
+		for k, v := range m {
+			if l := strings.Split(d.Type().Field(i).Tag.Get("json"), ",")[0]; (l == "" && d.Type().Field(i).Name == k) || (l != "-" && k == l) {
+				if reflect.TypeOf(v).Kind() == reflect.String {
+					switch d.Field(i).Kind() {
+					case reflect.Bool:
+						m[k], _ = strconv.ParseBool(v.(string))
+					case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64, reflect.Float32, reflect.Float64:
+						m[k], _ = strconv.ParseFloat(v.(string), 64)
+					}
+				}
+			}
+		}
+	}
+}
+
 func (self *Config) to(data ...map[string]interface{}) {
-	final, _ := json.Marshal(self.merge(data...))
+	combo := self.merge(data...)
 	if self.Configuration != nil {
+		if c, e := self.Configuration.(locker); e {
+			c.Lock()
+			defer c.Unlock()
+		}
+		self.cast(combo)
+		final, _ := json.Marshal(combo)
 		json.Unmarshal(final, self.Configuration)
 		if self.Logger != nil {
 			self.Logger.Info("Configuration: %#v\n", self.Configuration)
@@ -157,26 +188,27 @@ func (self *Config) parseEnvs() map[string]interface{} {
 	return vars
 }
 
-func (self *Config) help(behave bool) {
-	fmt.Fprintf(stdout, "[%s]: %s\n\n", appName, self.Description)
-	fmt.Fprintf(stdout, "\nFlags:\n")
-	fmt.Fprintf(stdout, "%-30s\t%s\n", "help, -h, --help", "display help information")
+func (self *Config) help(discontinue bool) {
+	print(stdout, "[%s]: %s\n\n", appName, self.Description)
+	print(stdout, "\nFlags:\n")
+	print(stdout, "%-30s\t%s\n", "help, -h, --help", "display help information")
 	for _, option := range self.options {
-		fmt.Fprintf(stdout, "%-30s\t%s\n", strings.Join(option.Flags, ", "), option.Description)
+		print(stdout, "%-30s\t%s\n", strings.Join(option.Flags, ", "), option.Description)
 	}
 	if len(self.examples) > 0 {
-		fmt.Fprintf(stdout, "\nUsage:\n")
+		print(stdout, "\nUsage:\n")
 		for _, e := range self.examples {
-			fmt.Fprintf(stdout, "%s %s\n", appName, e)
+			print(stdout, "%s %s\n", appName, e)
 		}
 	}
-	if behave {
+	if discontinue {
 		exit(0)
 	}
 }
 
 func (self *Config) parseOptions() map[string]interface{} {
 	vars := make(map[string]interface{})
+
 	var skip bool
 	for idx, arg := range os.Args {
 		if len(self.Description) > 0 && (arg == "help" || arg == "-h" || arg == "--help") {
@@ -188,6 +220,7 @@ func (self *Config) parseOptions() map[string]interface{} {
 		} else if arg == "--" {
 			break
 		}
+
 		if strings.HasPrefix(arg, "--") {
 			for _, long := range self.long {
 				if strings.HasPrefix(arg, "--"+long.Flag) {
@@ -246,6 +279,7 @@ func (self *Config) parseOptions() map[string]interface{} {
 			}
 		}
 	}
+
 	return vars
 }
 
@@ -277,7 +311,6 @@ func (self *Config) Load(p ...string) {
 	maps = append(maps, self.parseOptions())
 	maps = append(maps, self.parseEnvs())
 	maps = append(maps, self.loadConfig())
-	maps = append(maps, self.defaults)
 
 	self.to(maps...)
 }
@@ -286,6 +319,7 @@ func (self *Config) Env(key, description, name string) {
 	if len(key) == 0 || len(name) == 0 {
 		return
 	}
+
 	self.envs = append(self.envs, env{Key: key, Description: description, Name: name})
 }
 
@@ -293,7 +327,9 @@ func (self *Config) Option(key, description string, flags ...string) {
 	if len(key) == 0 {
 		return
 	}
+
 	o := option{Key: key, Description: description}
+
 	for _, flag := range flags {
 		p := parse{
 			Greedy: strings.HasSuffix(flag, ":"),
@@ -308,9 +344,11 @@ func (self *Config) Option(key, description string, flags ...string) {
 			o.Flags = append(o.Flags, "--"+p.Flag)
 		}
 	}
+
 	if len(o.Flags) == 0 {
 		return
 	}
+
 	self.options = append(self.options, o)
 }
 
@@ -320,11 +358,4 @@ func (self *Config) Example(example string) {
 
 func (self *Config) Help() {
 	self.help(false)
-}
-
-func (self *Config) Default(key string, value interface{}) {
-	if self.defaults == nil {
-		self.defaults = map[string]interface{}{}
-	}
-	self.set(self.defaults, key, value)
 }
