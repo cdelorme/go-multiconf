@@ -26,7 +26,7 @@ Define a configuration struct, _optionally with a `GoString()` function for safe
 	type MyConf struct { Name string }
 	func (self MyConf) GoString() string { return "custom format" }
 
-Create an instance of multiconf, and set your configuration object:
+Create an instance of multiconf, and set your configuration object with default values:
 
 	c := &MyConf{Name: "Default"}
 	config := multiconf.Config{Description: "I want help automated", Configuration: c}
@@ -37,7 +37,7 @@ _Setting a `Description` enables the builtin `help` support which captures `help
 
 	config.Example("-o /path/to/output")
 
-If in validating your configuration (_such as during post-processing_), you can call `Help()` to print usage information without automatically closing the application (whether it closes when calling the public method is up to your code).
+To deal with misconfiguration later you can call `Help()` directly to print usage information without automatically closing the application.
 
 Register cli options and environment variables like this:
 
@@ -48,12 +48,6 @@ You can even add keys with depth via period delimited values:
 
 	config.Env("try.depth", "demo depth", "MYAPP_CONFIG_DEPTH")
 	config.Option("try.depth", "demo depth", "-d", "--depth")
-
-For cases where you need a default value, you can use the `Default()` method:
-
-	config.Default("Name", "something")
-
-_This gets applied before anything else, which means all three inputs have a chance to override it._
 
 Finally, you can load all configuration in a single command (_optionally supplying alternative file paths_):
 
@@ -87,24 +81,36 @@ A fully [posix compliant `getopt` implementation](https://en.wikipedia.org/wiki/
 
 Intelligent automatically generated help messages are provided, depending on whether `Description` has been set on the `Config` instance.  This allows an intuitive activation and will capture `-h`, `--help`, and simply `help`, to display generated help, followed by running `os.Exit(0)`.
 
+All environment variables and cli options are loaded as strings, so we've added the `reflect` package to help identify the configuration object and cast the fields to the correct types before merging the final map with your structure.  _This is a trivial fix as json only supports three main data types and we only need to concern ourselves with one unexpected input format._  We silently discard failed casts in-line with the `json.Unmarshal` behavior.
+
 
 ## future
 
 In the future I would like to make the following changes:
 
-- add support for default values and force merge with `parseEnv` & `parseOption`
+- confirm or fix depth support (both `set()` and `cast()` may need modifications)
+- rename project/repo/package to something more succinct (`gonf` or `gomc`)
+- eliminate `Configuration` interface in favor of just `interface{}`
+	- replace with dynamic interface assertions for greater flexibility
+- remove logger dependency and implementation (assertions to optionally log)
 - enhance or simplify options, `getopt` parsing, and the associated help system
-- add support for `sighup` based reloads
+- strip comments from json configuration files
+- add support for `sighup` reloads
 
+
+## discarded
 
 I have decided not to support the following:
 
-- type-specific methods for registration of environment variables and cli options
-- introducing fswatch to automatically reload when configuration file changes
+- separate operation to register default values
+- support for functions by type when registering cli and env settings
+- reloading configuration file on change
 
-_I firmly believe types should be inferred by the configuration struct supplied, and that may involve some `reflect` logic in the future to support attempts to safely correct inputs from cli options and environment variables._
+_Since we are working with a configuration `struct`, all default values can be set on the object directly from the start._
 
-_Automatic reloads requires a transient dependency for cross-platform support, and introduces a new level of complexity regarding tracking of multiple folders.  I may expose a `reload()` function in the future, but I don't intend to add fswatch behavior._
+_Types should be enforced by the `struct` and we have implemented the `reflect` package to automatically handle casting._
+
+_Automatic reloads requires a transient dependency for true cross-platform support otherwise it requires a polling solution; it introduces a new level of complexity regarding tracking of multiple file paths as configuration path is variable; finally we may not want to run the callback when a reload fails and that adds yet another one-off behavior._  Overall, the complexity of this solution is not one I wish to burden my software with at this time.
 
 
 # references
@@ -117,3 +123,5 @@ _Automatic reloads requires a transient dependency for cross-platform support, a
 - [go method sets](https://golang.org/ref/spec#Method_sets)
 - [viper project](https://github.com/spf13/viper)
 - [getopt](https://en.wikipedia.org/wiki/Getopt)
+- [golang laws of reflection](http://blog.golang.org/laws-of-reflection)
+- [reflect get struct tags](https://golang.org/pkg/reflect/#StructTag.Get)
