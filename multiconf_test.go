@@ -102,7 +102,6 @@ func TestConfigCast(t *testing.T) {
 	// prepare matching map & verify correct types after
 	m := map[string]interface{}{"name": "casey", "number": "15.9", "Final": "true", "key": "12"}
 	o.cast(m)
-	t.Logf("%#v\n", m)
 	if _, e := m["number"].(float64); !e {
 		t.FailNow()
 	} else if _, e := m["Final"].(bool); !e {
@@ -130,11 +129,23 @@ func TestConfigTo(t *testing.T) {
 func TestConfigSet(t *testing.T) {
 	t.Parallel()
 	o := &Config{}
-	m := map[string]interface{}{}
+	m := map[string]interface{}{"x": false}
 
+	// test key
 	o.set(m, "key", "value")
+	if m["key"] != "value" {
+		t.FailNow()
+	}
+
+	// test depth
 	o.set(m, "go.deeper", 123)
-	if _, ok := m["go"]; !ok || m["key"] != "value" {
+	if _, ok := m["go"]; !ok {
+		t.FailNow()
+	}
+
+	// test depth override non-map
+	o.set(m, "x.truthy", true)
+	if _, ok := m["x"]; !ok {
 		t.FailNow()
 	}
 }
@@ -166,18 +177,15 @@ func TestConfigParseEnvs(t *testing.T) {
 func TestConfigPrivateHelp(t *testing.T) {
 	t.Parallel()
 	o := Config{}
-	// @todo something
-	// test with nothing
-	o.Help()
+	o.Option("test", "test help cli flag", "-t")
+	o.Example("test help example")
+	code = 1
 
-	// test with description
-	o.Description = "Some Application"
-	o.Help()
-
-	// test with examples
-	o.Example("Test")
-	o.Help()
-
+	// test with exit
+	o.help(true)
+	if code != 0 {
+		t.FailNow()
+	}
 }
 
 func TestConfigParseOptions(t *testing.T) {
@@ -188,7 +196,7 @@ func TestConfigParseOptions(t *testing.T) {
 	os.Args = []string{"--help"}
 	code = 1
 	v = o.parseOptions()
-	if code != 0 {
+	if code != 1 && len(v) != 0 {
 		t.FailNow()
 	}
 
@@ -209,7 +217,7 @@ func TestConfigParseOptions(t *testing.T) {
 	os.Args = []string{"--help"}
 	code = 1
 	v = o.parseOptions()
-	if code != 1 {
+	if code != 0 {
 		t.FailNow()
 	}
 
