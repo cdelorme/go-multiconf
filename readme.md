@@ -56,6 +56,14 @@ Finally, you can load all configuration in a single command (_optionally supplyi
 _Your configuration object `c` from earlier will now be populated and you can begin using it._
 
 
+## tests
+
+This software comes with a complete suite of isolated unit tests and full coverage that can be validated with:
+
+	go test -v -race -coverprofile=coverage.out
+	go tool cover -html=coverage.out
+
+
 ## design
 
 The design of this project was inspired over the past year using separate projects I had constructed to manage each facet of configuration independently.  Over time I realized that I always ended up with the same structure for loading configuration, but the result was a bit messy and complicated due to all the manipulation.
