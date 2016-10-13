@@ -283,7 +283,7 @@ func (self *Gonf) parseOptions() map[string]interface{} {
 	return vars
 }
 
-func (self *Gonf) loadConfig() map[string]interface{} {
+func (self *Gonf) parseFiles() map[string]interface{} {
 	vars := make(map[string]interface{})
 
 	for _, f := range self.paths {
@@ -310,7 +310,7 @@ func (self *Gonf) Load(p ...string) {
 
 	maps = append(maps, self.parseOptions())
 	maps = append(maps, self.parseEnvs())
-	maps = append(maps, self.loadConfig())
+	maps = append(maps, self.parseFiles())
 
 	self.to(maps...)
 }

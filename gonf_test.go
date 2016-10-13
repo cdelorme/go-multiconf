@@ -77,7 +77,7 @@ func TestInitLoad(t *testing.T) {
 	}
 }
 
-func TestConfigMerge(t *testing.T) {
+func TestGonfMerge(t *testing.T) {
 	t.Parallel()
 	o := Gonf{}
 
@@ -95,7 +95,7 @@ func TestConfigMerge(t *testing.T) {
 	}
 }
 
-func TestConfigCast(t *testing.T) {
+func TestGonfCast(t *testing.T) {
 	t.Parallel()
 	o := &Gonf{Configuration: &mockConfig{}}
 
@@ -111,7 +111,7 @@ func TestConfigCast(t *testing.T) {
 	}
 }
 
-func TestConfigTo(t *testing.T) {
+func TestGonfTo(t *testing.T) {
 	t.Parallel()
 	o := Gonf{Logger: &mockLogger{}}
 
@@ -126,7 +126,7 @@ func TestConfigTo(t *testing.T) {
 	}
 }
 
-func TestConfigSet(t *testing.T) {
+func TestGonfSet(t *testing.T) {
 	t.Parallel()
 	o := &Gonf{}
 	m := map[string]interface{}{"x": false}
@@ -150,7 +150,7 @@ func TestConfigSet(t *testing.T) {
 	}
 }
 
-func TestConfigParseEnvs(t *testing.T) {
+func TestGonfParseEnvs(t *testing.T) {
 	o := Gonf{}
 
 	// register some env vars
@@ -174,7 +174,7 @@ func TestConfigParseEnvs(t *testing.T) {
 	}
 }
 
-func TestConfigPrivateHelp(t *testing.T) {
+func TestGonfPrivateHelp(t *testing.T) {
 	t.Parallel()
 	o := Gonf{}
 	o.Option("test", "test help cli flag", "-t")
@@ -188,7 +188,7 @@ func TestConfigPrivateHelp(t *testing.T) {
 	}
 }
 
-func TestConfigParseOptions(t *testing.T) {
+func TestGonfParseOptions(t *testing.T) {
 	o := &Gonf{}
 	var v map[string]interface{}
 
@@ -282,7 +282,7 @@ func TestConfigParseOptions(t *testing.T) {
 	}
 }
 
-func TestConfigLoadConfig(t *testing.T) {
+func TestGonfParseFiles(t *testing.T) {
 	l := &mockLogger{}
 	o := Gonf{Logger: l}
 	v := map[string]interface{}{}
@@ -290,7 +290,7 @@ func TestConfigLoadConfig(t *testing.T) {
 	// test with error response
 	o.paths = []string{"nope"}
 	fileerror = mockError
-	v = o.loadConfig()
+	v = o.parseFiles()
 	if len(v) > 0 {
 		t.FailNow()
 	}
@@ -298,7 +298,7 @@ func TestConfigLoadConfig(t *testing.T) {
 
 	// test with invalid json
 	filedata = `not json`
-	v = o.loadConfig()
+	v = o.parseFiles()
 	if len(v) > 0 || !strings.HasPrefix(l.Store, "failed to parse") {
 		t.FailNow()
 	}
@@ -313,13 +313,13 @@ func TestConfigLoadConfig(t *testing.T) {
 		},
 		"Final": true
 	}`
-	v = o.loadConfig()
+	v = o.parseFiles()
 	if v["name"] != "casey" || v["Final"] != true || v["key"] != float64(123) {
 		t.FailNow()
 	}
 }
 
-func TestConfigLoad(t *testing.T) {
+func TestGonfPublicLoad(t *testing.T) {
 	l := &mockLogger{}
 	c := &mockConfig{Name: "casey"}
 	o := Gonf{Logger: l, Configuration: c}
@@ -334,7 +334,7 @@ func TestConfigLoad(t *testing.T) {
 	}
 }
 
-func TestConfigEnv(t *testing.T) {
+func TestGonfPublicEnv(t *testing.T) {
 	t.Parallel()
 
 	o := Gonf{}
@@ -350,7 +350,7 @@ func TestConfigEnv(t *testing.T) {
 	}
 }
 
-func TestConfigOption(t *testing.T) {
+func TestGonfPublicOption(t *testing.T) {
 	t.Parallel()
 
 	o := Gonf{}
@@ -370,13 +370,13 @@ func TestConfigOption(t *testing.T) {
 	}
 }
 
-func TestConfigExample(t *testing.T) {
+func TestGonfPublicExample(t *testing.T) {
 	t.Parallel()
 	o := &Gonf{}
 	o.Example("Whatever")
 }
 
-func TestConfigPublicHelp(t *testing.T) {
+func TestGonfPublicHelp(t *testing.T) {
 	t.Parallel()
 	o := &Gonf{}
 	o.Help()
