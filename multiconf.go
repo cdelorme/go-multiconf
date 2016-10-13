@@ -1,4 +1,4 @@
-package multiconf
+package gonf
 
 import (
 	"encoding/json"
@@ -94,7 +94,7 @@ type env struct {
 	Description string
 }
 
-type Config struct {
+type Gonf struct {
 	Logger        logger
 	Configuration configuration
 	Description   string
@@ -107,7 +107,7 @@ type Config struct {
 	envs          []env
 }
 
-func (self *Config) merge(maps ...map[string]interface{}) map[string]interface{} {
+func (self *Gonf) merge(maps ...map[string]interface{}) map[string]interface{} {
 	m := make(map[string]interface{})
 	for _, t := range maps {
 		for k, v := range t {
@@ -124,7 +124,7 @@ func (self *Config) merge(maps ...map[string]interface{}) map[string]interface{}
 	return m
 }
 
-func (self *Config) cast(m map[string]interface{}) {
+func (self *Gonf) cast(m map[string]interface{}) {
 	d := reflect.ValueOf(self.Configuration).Elem()
 	for i := 0; i < d.NumField(); i++ {
 		for k, v := range m {
@@ -142,7 +142,7 @@ func (self *Config) cast(m map[string]interface{}) {
 	}
 }
 
-func (self *Config) to(data ...map[string]interface{}) {
+func (self *Gonf) to(data ...map[string]interface{}) {
 	combo := self.merge(data...)
 	if self.Configuration != nil {
 		if c, e := self.Configuration.(locker); e {
@@ -158,7 +158,7 @@ func (self *Config) to(data ...map[string]interface{}) {
 	}
 }
 
-func (self *Config) set(cursor map[string]interface{}, key string, value interface{}) {
+func (self *Gonf) set(cursor map[string]interface{}, key string, value interface{}) {
 	keys := strings.Split(key, ".")
 	for i, k := range keys {
 		if i+1 == len(keys) {
@@ -178,7 +178,7 @@ func (self *Config) set(cursor map[string]interface{}, key string, value interfa
 	}
 }
 
-func (self *Config) parseEnvs() map[string]interface{} {
+func (self *Gonf) parseEnvs() map[string]interface{} {
 	vars := make(map[string]interface{})
 	for _, e := range self.envs {
 		if v := os.Getenv(e.Name); len(v) > 0 {
@@ -188,7 +188,7 @@ func (self *Config) parseEnvs() map[string]interface{} {
 	return vars
 }
 
-func (self *Config) help(discontinue bool) {
+func (self *Gonf) help(discontinue bool) {
 	print(stdout, "[%s]: %s\n\n", appName, self.Description)
 	print(stdout, "\nFlags:\n")
 	print(stdout, "%-30s\t%s\n", "help, -h, --help", "display help information")
@@ -206,7 +206,7 @@ func (self *Config) help(discontinue bool) {
 	}
 }
 
-func (self *Config) parseOptions() map[string]interface{} {
+func (self *Gonf) parseOptions() map[string]interface{} {
 	vars := make(map[string]interface{})
 
 	var skip bool
@@ -283,7 +283,7 @@ func (self *Config) parseOptions() map[string]interface{} {
 	return vars
 }
 
-func (self *Config) loadConfig() map[string]interface{} {
+func (self *Gonf) loadConfig() map[string]interface{} {
 	vars := make(map[string]interface{})
 
 	for _, f := range self.paths {
@@ -303,7 +303,7 @@ func (self *Config) loadConfig() map[string]interface{} {
 	return vars
 }
 
-func (self *Config) Load(p ...string) {
+func (self *Gonf) Load(p ...string) {
 	self.paths = append(paths, p...)
 
 	maps := []map[string]interface{}{}
@@ -315,7 +315,7 @@ func (self *Config) Load(p ...string) {
 	self.to(maps...)
 }
 
-func (self *Config) Env(key, description, name string) {
+func (self *Gonf) Env(key, description, name string) {
 	if len(key) == 0 || len(name) == 0 {
 		return
 	}
@@ -323,7 +323,7 @@ func (self *Config) Env(key, description, name string) {
 	self.envs = append(self.envs, env{Key: key, Description: description, Name: name})
 }
 
-func (self *Config) Option(key, description string, flags ...string) {
+func (self *Gonf) Option(key, description string, flags ...string) {
 	if len(key) == 0 {
 		return
 	}
@@ -352,10 +352,10 @@ func (self *Config) Option(key, description string, flags ...string) {
 	self.options = append(self.options, o)
 }
 
-func (self *Config) Example(example string) {
+func (self *Gonf) Example(example string) {
 	self.examples = append(self.examples, example)
 }
 
-func (self *Config) Help() {
+func (self *Gonf) Help() {
 	self.help(false)
 }

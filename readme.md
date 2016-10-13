@@ -1,5 +1,5 @@
 
-# [go-multiconf](https://github.com/cdelorme/go-multiconf)
+# [gonf](https://github.com/cdelorme/gonf)
 
 An idiomatic go utility for standardizing and consolidating application configuration.
 
@@ -19,17 +19,17 @@ It comes with a complete suite of unit tests, and an easy-to-use setup defined i
 
 Import the library:
 
-	import "github.com/cdelorme/go-multiconf"
+	import "github.com/cdelorme/gonf"
 
 Define a configuration struct, _optionally with a `GoString()` function for safe printing_:
 
 	type MyConf struct { Name string }
 	func (self MyConf) GoString() string { return "custom format" }
 
-Create an instance of multiconf, and set your configuration object with default values:
+Create an instance of `gonf`, and set your configuration object with default values:
 
 	c := &MyConf{Name: "Default"}
-	config := multiconf.Config{Description: "I want help automated", Configuration: c}
+	config := gonf.Gonf{Description: "I want help automated", Configuration: c}
 
 Supplying your configuration struct to the config instance will automatically populate and merge all the settings from cli options, environment variables, and configuration file data.
 

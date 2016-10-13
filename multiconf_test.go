@@ -1,4 +1,4 @@
-package multiconf
+package gonf
 
 import (
 	"errors"
@@ -79,7 +79,7 @@ func TestInitLoad(t *testing.T) {
 
 func TestConfigMerge(t *testing.T) {
 	t.Parallel()
-	o := Config{}
+	o := Gonf{}
 
 	// maps to test merging and depth
 	m1 := map[string]interface{}{"key": "value", "b": true, "deep": map[string]interface{}{"copy": "me"}, "fail": map[string]interface{}{"no": false}}
@@ -97,7 +97,7 @@ func TestConfigMerge(t *testing.T) {
 
 func TestConfigCast(t *testing.T) {
 	t.Parallel()
-	o := &Config{Configuration: &mockConfig{}}
+	o := &Gonf{Configuration: &mockConfig{}}
 
 	// prepare matching map & verify correct types after
 	m := map[string]interface{}{"name": "casey", "number": "15.9", "Final": "true", "key": "12"}
@@ -113,7 +113,7 @@ func TestConfigCast(t *testing.T) {
 
 func TestConfigTo(t *testing.T) {
 	t.Parallel()
-	o := Config{Logger: &mockLogger{}}
+	o := Gonf{Logger: &mockLogger{}}
 
 	// set config
 	c := &mockConfig{}
@@ -128,7 +128,7 @@ func TestConfigTo(t *testing.T) {
 
 func TestConfigSet(t *testing.T) {
 	t.Parallel()
-	o := &Config{}
+	o := &Gonf{}
 	m := map[string]interface{}{"x": false}
 
 	// test key
@@ -151,7 +151,7 @@ func TestConfigSet(t *testing.T) {
 }
 
 func TestConfigParseEnvs(t *testing.T) {
-	o := Config{}
+	o := Gonf{}
 
 	// register some env vars
 	o.Env("test", "", "MULTICONF_TEST_ENVVAR")
@@ -176,7 +176,7 @@ func TestConfigParseEnvs(t *testing.T) {
 
 func TestConfigPrivateHelp(t *testing.T) {
 	t.Parallel()
-	o := Config{}
+	o := Gonf{}
 	o.Option("test", "test help cli flag", "-t")
 	o.Example("test help example")
 	code = 1
@@ -189,7 +189,7 @@ func TestConfigPrivateHelp(t *testing.T) {
 }
 
 func TestConfigParseOptions(t *testing.T) {
-	o := &Config{}
+	o := &Gonf{}
 	var v map[string]interface{}
 
 	// test without description
@@ -284,7 +284,7 @@ func TestConfigParseOptions(t *testing.T) {
 
 func TestConfigLoadConfig(t *testing.T) {
 	l := &mockLogger{}
-	o := Config{Logger: l}
+	o := Gonf{Logger: l}
 	v := map[string]interface{}{}
 
 	// test with error response
@@ -322,7 +322,7 @@ func TestConfigLoadConfig(t *testing.T) {
 func TestConfigLoad(t *testing.T) {
 	l := &mockLogger{}
 	c := &mockConfig{Name: "casey"}
-	o := Config{Logger: l, Configuration: c}
+	o := Gonf{Logger: l, Configuration: c}
 
 	// override readfile, and verify load
 	filedata = `{}`
@@ -337,7 +337,7 @@ func TestConfigLoad(t *testing.T) {
 func TestConfigEnv(t *testing.T) {
 	t.Parallel()
 
-	o := Config{}
+	o := Gonf{}
 
 	// good, bad, bad
 	o.Env("env", "", "ENV")
@@ -353,7 +353,7 @@ func TestConfigEnv(t *testing.T) {
 func TestConfigOption(t *testing.T) {
 	t.Parallel()
 
-	o := Config{}
+	o := Gonf{}
 
 	// good
 	o.Option("option", "", "-o", "--option")
@@ -372,12 +372,12 @@ func TestConfigOption(t *testing.T) {
 
 func TestConfigExample(t *testing.T) {
 	t.Parallel()
-	o := &Config{}
+	o := &Gonf{}
 	o.Example("Whatever")
 }
 
 func TestConfigPublicHelp(t *testing.T) {
 	t.Parallel()
-	o := &Config{}
+	o := &Gonf{}
 	o.Help()
 }
