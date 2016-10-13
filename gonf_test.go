@@ -6,7 +6,6 @@ import (
 	"io"
 	"io/ioutil"
 	"os"
-	"strings"
 	"sync"
 	"testing"
 )
@@ -25,6 +24,7 @@ func (self *mockLogger) Debug(f string, args ...interface{}) { self.Store = fmt.
 
 type mockConfig struct {
 	sync.Mutex
+	mockLogger
 	Key      int     `json:"key,omitempty"`
 	Final    bool    `json:"Final,omitempty"`
 	Name     string  `json:"name,omitempty"`
@@ -36,6 +36,11 @@ type mockConfig struct {
 	} `json:"extra,omitempty"`
 }
 
+func (self *mockConfig) Callback()                    {}
+func (self mockConfig) String() string                { return "correct" }
+func (self mockConfig) GoString() string              { return self.String() }
+func (self *mockConfig) MarshalJSON() ([]byte, error) { return []byte(self.String()), nil }
+
 type mockDeepConfig struct {
 	mockConfig
 	Values struct {
@@ -43,10 +48,6 @@ type mockDeepConfig struct {
 	} `json:"values,omitempty"`
 	Parent string
 }
-
-func (self mockConfig) String() string                { return "correct" }
-func (self mockConfig) GoString() string              { return self.String() }
-func (self *mockConfig) MarshalJSON() ([]byte, error) { return []byte(self.String()), nil }
 
 func init() {
 	stdout = ioutil.Discard
@@ -154,7 +155,7 @@ func TestGonfCast(t *testing.T) {
 
 func TestGonfTo(t *testing.T) {
 	t.Parallel()
-	o := Gonf{Logger: &mockLogger{}}
+	o := Gonf{}
 
 	// set config
 	c := &mockConfig{}
@@ -336,8 +337,7 @@ func TestGonfParseOptions(t *testing.T) {
 }
 
 func TestGonfParseFiles(t *testing.T) {
-	l := &mockLogger{}
-	o := Gonf{Logger: l}
+	o := Gonf{Configuration: &mockConfig{}}
 	v := map[string]interface{}{}
 
 	// test with error response
@@ -352,7 +352,7 @@ func TestGonfParseFiles(t *testing.T) {
 	// test with invalid json
 	filedata = `not json`
 	v = o.parseFiles()
-	if len(v) > 0 || !strings.HasPrefix(l.Store, "failed to parse") {
+	if len(v) > 0 {
 		t.FailNow()
 	}
 
@@ -373,16 +373,15 @@ func TestGonfParseFiles(t *testing.T) {
 }
 
 func TestGonfPublicLoad(t *testing.T) {
-	l := &mockLogger{}
 	c := &mockConfig{Name: "casey"}
-	o := Gonf{Logger: l, Configuration: c}
+	o := Gonf{Configuration: c}
 
 	// override readfile, and verify load
 	filedata = `{}`
 	o.Load()
 
 	// verify log output
-	if c.Name != "casey" || !strings.HasPrefix(l.Store, "Configuration: correct") {
+	if c.Name != "casey" {
 		t.FailNow()
 	}
 }

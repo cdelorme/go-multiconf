@@ -18,13 +18,13 @@ type locker interface {
 	Unlock()
 }
 
-type configuration interface {
-	GoString() string
-}
-
 type logger interface {
 	Info(string, ...interface{})
 	Debug(string, ...interface{})
+}
+
+type callbacker interface {
+	Callback()
 }
 
 var print func(io.Writer, string, ...interface{}) (int, error) = fmt.Fprintf
@@ -95,8 +95,7 @@ type env struct {
 }
 
 type Gonf struct {
-	Logger        logger
-	Configuration configuration
+	Configuration interface{}
 	Description   string
 	paths         []string
 	examples      []string
@@ -180,8 +179,8 @@ func (self *Gonf) to(data ...map[string]interface{}) {
 		self.cast(combo)
 		final, _ := json.Marshal(combo)
 		json.Unmarshal(final, self.Configuration)
-		if self.Logger != nil {
-			self.Logger.Info("Configuration: %#v\n", self.Configuration)
+		if c, e := self.Configuration.(logger); e {
+			c.Info("Configuration: %#v\n", self.Configuration)
 		}
 	}
 }
@@ -321,10 +320,8 @@ func (self *Gonf) parseFiles() map[string]interface{} {
 		}
 		if e := json.Unmarshal(data, &vars); e == nil {
 			return vars
-		} else {
-			if self.Logger != nil {
-				self.Logger.Debug("failed to parse %s (%s)", f, e)
-			}
+		} else if c, ok := self.Configuration.(logger); ok {
+			c.Debug("failed to parse %s (%s)", f, e)
 		}
 	}
 
@@ -341,6 +338,10 @@ func (self *Gonf) Load(p ...string) {
 	maps = append(maps, self.parseFiles())
 
 	self.to(maps...)
+
+	if c, e := self.Configuration.(callbacker); e {
+		c.Callback()
+	}
 }
 
 func (self *Gonf) Env(key, description, name string) {
