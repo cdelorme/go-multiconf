@@ -36,6 +36,14 @@ type mockConfig struct {
 	} `json:"extra,omitempty"`
 }
 
+type mockDeepConfig struct {
+	mockConfig
+	Values struct {
+		Test int
+	} `json:"values,omitempty"`
+	Parent string
+}
+
 func (self mockConfig) String() string                { return "correct" }
 func (self mockConfig) GoString() string              { return self.String() }
 func (self *mockConfig) MarshalJSON() ([]byte, error) { return []byte(self.String()), nil }
@@ -91,6 +99,39 @@ func TestGonfMerge(t *testing.T) {
 		t.FailNow()
 	}
 	if m, ok := v["deep"].(map[string]interface{}); !ok || m["next"] != "keypair" || m["copy"] != "me" {
+		t.FailNow()
+	}
+}
+
+func TestGonfRecast(t *testing.T) {
+	t.Parallel()
+	// @todo: switch to mockDeepStruct
+	o := &Gonf{Configuration: &mockDeepConfig{}}
+
+	// prepare matching map & verify correct types after
+	m := map[string]interface{}{
+		"name":   "casey",
+		"number": "15.9",
+		"Final":  "true",
+		"key":    "12",
+		"values": map[string]interface{}{
+			"Test": "42",
+		},
+	}
+	o.cast(m)
+	if _, e := m["number"].(float64); !e {
+		t.FailNow()
+	} else if _, e := m["Final"].(bool); !e {
+		t.FailNow()
+	} else if _, e := m["key"].(float64); !e {
+		t.FailNow()
+	} else if d, e := m["values"]; !e {
+		t.FailNow()
+	} else if tm, ok := d.(map[string]interface{}); !ok {
+		t.FailNow()
+	} else if v, ok := tm["Test"]; !ok {
+		t.FailNow()
+	} else if f, ok := v.(float64); !ok || f != 42 {
 		t.FailNow()
 	}
 }

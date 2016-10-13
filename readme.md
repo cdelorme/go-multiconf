@@ -8,7 +8,7 @@ An idiomatic go utility for standardizing and consolidating application configur
 
 This library consolidates three forms of configuration into a single tidy package; file, cli options, and environment variables.
 
-The aim is to reduce cognitive load on developers by providing a minimal code base (_< 350 lines of code_), a limited number of exposed operations, and no transitive dependencies.
+The aim is to reduce cognitive load on developers by providing a minimal code base (_< 400 lines of code_), a limited number of exposed operations, and no transitive dependencies.
 
 It comes with a complete suite of unit tests, and an easy-to-use setup defined in the readme.  All behavior is clearly defined and explained in the readme as well.
 
@@ -88,8 +88,6 @@ All environment variables and cli options are loaded as strings, so we've added 
 
 In the future I would like to make the following changes:
 
-- confirm or fix depth support (both `set()` and `cast()` may need modifications)
-- rename project/repo/package to something more succinct (`gonf` or `gomc`)
 - eliminate `Configuration` interface in favor of just `interface{}`
 	- replace with dynamic interface assertions for greater flexibility
 - remove logger dependency and implementation (assertions to optionally log)

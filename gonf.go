@@ -124,22 +124,50 @@ func (self *Gonf) merge(maps ...map[string]interface{}) map[string]interface{} {
 	return m
 }
 
-func (self *Gonf) cast(m map[string]interface{}) {
-	d := reflect.ValueOf(self.Configuration).Elem()
+func (self *Gonf) isNumeric(t reflect.Kind) bool {
+	switch t {
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64, reflect.Float32, reflect.Float64:
+		return true
+	}
+	return false
+}
+
+func (self *Gonf) reCast(o interface{}, m map[string]interface{}) {
+	d := reflect.ValueOf(o).Elem()
+	var skip bool
 	for i := 0; i < d.NumField(); i++ {
+		t := strings.Split(d.Type().Field(i).Tag.Get("json"), ",")[0]
+		if t == "-" {
+			continue
+		}
+		n := d.Type().Field(i).Name
+		tr := d.Field(i).Kind()
 		for k, v := range m {
-			if l := strings.Split(d.Type().Field(i).Tag.Get("json"), ",")[0]; (l == "" && d.Type().Field(i).Name == k) || (l != "-" && k == l) {
-				if reflect.TypeOf(v).Kind() == reflect.String {
-					switch d.Field(i).Kind() {
-					case reflect.Bool:
+			if t == k || (t == "" && n == k) {
+				skip = true
+				in := reflect.TypeOf(v).Kind()
+				if in == reflect.String {
+					if tr == reflect.Bool {
 						m[k], _ = strconv.ParseBool(v.(string))
-					case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64, reflect.Float32, reflect.Float64:
+					} else if self.isNumeric(tr) {
 						m[k], _ = strconv.ParseFloat(v.(string), 64)
+					}
+				} else if in == reflect.Map && tr == reflect.Struct {
+					if p, ok := v.(map[string]interface{}); ok {
+						self.reCast(d.Field(i).Addr().Interface(), p)
 					}
 				}
 			}
 		}
+		if !skip && t == "" && tr == reflect.Struct {
+			self.reCast(reflect.New(d.Field(i).Type()).Interface(), m)
+		}
+		skip = false
 	}
+}
+
+func (self *Gonf) cast(m map[string]interface{}) {
+	self.reCast(self.Configuration, m)
 }
 
 func (self *Gonf) to(data ...map[string]interface{}) {
