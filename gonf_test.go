@@ -131,21 +131,33 @@ func TestGonfSet(t *testing.T) {
 	o := &Gonf{}
 	m := map[string]interface{}{"x": false}
 
-	// test key
+	// test single key/value
 	o.set(m, "key", "value")
 	if m["key"] != "value" {
 		t.FailNow()
 	}
 
-	// test depth
+	// test depth via period and number
 	o.set(m, "go.deeper", 123)
-	if _, ok := m["go"]; !ok {
+	if d, ok := m["go"]; !ok {
+		t.FailNow()
+	} else if tm, ok := d.(map[string]interface{}); !ok {
+		t.FailNow()
+	} else if v, ok := tm["deeper"]; !ok {
+		t.FailNow()
+	} else if f, ok := v.(int); !ok || f != 123 {
 		t.FailNow()
 	}
 
-	// test depth override non-map
+	// test depth via period using override
 	o.set(m, "x.truthy", true)
-	if _, ok := m["x"]; !ok {
+	if d, ok := m["x"]; !ok {
+		t.FailNow()
+	} else if tm, ok := d.(map[string]interface{}); !ok {
+		t.FailNow()
+	} else if v, ok := tm["truthy"]; !ok {
+		t.FailNow()
+	} else if f, ok := v.(bool); !ok || !f {
 		t.FailNow()
 	}
 }
