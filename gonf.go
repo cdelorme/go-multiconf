@@ -139,9 +139,8 @@ func (self *Gonf) isNumeric(t reflect.Kind) bool {
 	return false
 }
 
-func (self *Gonf) reCast(o interface{}, m map[string]interface{}) {
+func (self *Gonf) cast(o interface{}, m map[string]interface{}, discard map[string]interface{}) {
 	d := reflect.ValueOf(o).Elem()
-	var skip bool
 	for i := 0; i < d.NumField(); i++ {
 		t := strings.Split(d.Type().Field(i).Tag.Get("json"), ",")[0]
 		if t == "-" {
@@ -150,31 +149,28 @@ func (self *Gonf) reCast(o interface{}, m map[string]interface{}) {
 		n := d.Type().Field(i).Name
 		tr := d.Field(i).Kind()
 		for k, v := range m {
-			if t == k || (t == "" && n == k) {
-				skip = true
+			if _, ok := discard[k]; !ok && (t == k || (t == "" && n == k)) {
+				discard[k] = struct{}{}
 				in := reflect.TypeOf(v).Kind()
-				if in == reflect.String {
-					if tr == reflect.Bool {
-						m[k], _ = strconv.ParseBool(v.(string))
-					} else if self.isNumeric(tr) {
-						m[k], _ = strconv.ParseFloat(v.(string), 64)
-					}
-				} else if in == reflect.Map && tr == reflect.Struct {
+				switch {
+				case in == reflect.String && tr == reflect.Bool:
+					m[k], _ = strconv.ParseBool(v.(string))
+				case in == reflect.String && self.isNumeric(tr):
+					m[k], _ = strconv.ParseFloat(v.(string), 64)
+				case in == reflect.Map && tr == reflect.Struct:
 					if p, ok := v.(map[string]interface{}); ok {
-						self.reCast(d.Field(i).Addr().Interface(), p)
+						self.cast(d.Field(i).Addr().Interface(), p, map[string]interface{}{})
 					}
 				}
 			}
 		}
-		if !skip && t == "" && tr == reflect.Struct {
-			self.reCast(reflect.New(d.Field(i).Type()).Interface(), m)
-		}
-		skip = false
 	}
-}
-
-func (self *Gonf) cast(m map[string]interface{}) {
-	self.reCast(self.Configuration, m)
+	for i := 0; i < d.NumField(); i++ {
+		if t := strings.Split(d.Type().Field(i).Tag.Get("json"), ",")[0]; t != "" || d.Field(i).Kind() != reflect.Struct {
+			continue
+		}
+		self.cast(reflect.New(d.Field(i).Type()).Interface(), m, discard)
+	}
 }
 
 func (self *Gonf) to(data ...map[string]interface{}) {
@@ -184,7 +180,7 @@ func (self *Gonf) to(data ...map[string]interface{}) {
 			c.Lock()
 			defer c.Unlock()
 		}
-		self.cast(combo)
+		self.cast(self.Configuration, combo, map[string]interface{}{})
 		final, _ := json.Marshal(combo)
 		json.Unmarshal(final, self.Configuration)
 		if c, e := self.Configuration.(logger); e {
