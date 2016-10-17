@@ -23,31 +23,39 @@ type mockLogger struct {
 func (self *mockLogger) Info(f string, args ...interface{})  { self.Store = fmt.Sprintf(f, args...) }
 func (self *mockLogger) Debug(f string, args ...interface{}) { self.Store = fmt.Sprintf(f, args...) }
 
+// composite object demonstrating that "unnamed" composition
+// receives properties and casting is correctly handled
+type mockCompositeConfig struct {
+	Implicit bool
+	Tagged   int `json:"implicit,omitempty"`
+	Conflict int `json:"conflict,omitempty"`
+}
+
+// functions that validate dynamic behavior
+// and demonstrate fmt property protection
+func (self mockCompositeConfig) String() string                { return "correct" }
+func (self mockCompositeConfig) GoString() string              { return self.String() }
+func (self *mockCompositeConfig) MarshalJSON() ([]byte, error) { return []byte(self.String()), nil }
+func (self *mockCompositeConfig) Callback()                    {}
+
+// parent level structure demonstrating the use of composition
+// to induce dynamic functionality (locking & logging)
+// while also demonstrating correct handling of property conflicts
+// when dealing with implicit or unnamed composite structures
 type mockConfig struct {
 	sync.Mutex
 	mockLogger
-	Key      int     `json:"key,omitempty"`
-	Final    bool    `json:"Final,omitempty"`
+	mockCompositeConfig
+
+	Conflict string  `json:"conflict,omitempty"`
 	Name     string  `json:"name,omitempty"`
-	Password string  `json:"-"`
 	Number   float32 `json:"number,omitempty"`
-	Extra    struct {
-		Data    int  `json:"data,omitempty"`
-		Correct bool `json:"correct,omitempty"`
-	} `json:"extra,omitempty"`
-}
+	Boolean  bool    `json:"boolean,omitempty"`
+	Ignored  bool    `json:"-"`
 
-func (self *mockConfig) Callback()                    {}
-func (self mockConfig) String() string                { return "correct" }
-func (self mockConfig) GoString() string              { return self.String() }
-func (self *mockConfig) MarshalJSON() ([]byte, error) { return []byte(self.String()), nil }
-
-type mockDeepConfig struct {
-	mockConfig
-	Values struct {
-		Test int
-	} `json:"values,omitempty"`
-	Parent string
+	Named struct {
+		Data int `json:"data,omitempty"`
+	} `json:"named,omitempty"`
 }
 
 func init() {
@@ -146,66 +154,61 @@ func TestGonfMerge(t *testing.T) {
 	}
 }
 
-func TestGonfRecast(t *testing.T) {
+func TestGonfCast(t *testing.T) {
 	t.Parallel()
-	// @todo: switch to mockDeepStruct
-	o := &Gonf{Configuration: &mockDeepConfig{}}
+	g := &Gonf{Configuration: &mockConfig{}}
 
-	// prepare matching map & verify correct types after
+	// prepare map matching config struct to verify types after
 	m := map[string]interface{}{
-		"name":   "casey",
-		"number": "15.9",
-		"Final":  "true",
-		"key":    "12",
-		"values": map[string]interface{}{
-			"Test": "42",
-		},
+		"name":     "casey",
+		"number":   "15.9",
+		"boolean":  "true",
+		"conflict": "42",
+		"named":    map[string]interface{}{"data": "42"},
 	}
-	o.cast(m)
-	if _, e := m["number"].(float64); !e {
+
+	g.cast(g.Configuration, m, map[string]interface{}{})
+	if d, e := m["number"].(float64); !e || d != 15.9 {
 		t.FailNow()
-	} else if _, e := m["Final"].(bool); !e {
+	} else if d, e := m["boolean"].(bool); !e || !d {
 		t.FailNow()
-	} else if _, e := m["key"].(float64); !e {
+	} else if s, ok := m["conflict"].(string); !ok || s != "42" {
 		t.FailNow()
-	} else if d, e := m["values"]; !e {
+	} else if d, e := m["named"]; !e {
 		t.FailNow()
 	} else if tm, ok := d.(map[string]interface{}); !ok {
 		t.FailNow()
-	} else if v, ok := tm["Test"]; !ok {
+	} else if v, ok := tm["data"]; !ok {
 		t.FailNow()
 	} else if f, ok := v.(float64); !ok || f != 42 {
 		t.FailNow()
 	}
 }
 
-func TestGonfCast(t *testing.T) {
-	t.Parallel()
-	o := &Gonf{Configuration: &mockConfig{}}
-
-	// prepare matching map & verify correct types after
-	m := map[string]interface{}{"name": "casey", "number": "15.9", "Final": "true", "key": "12"}
-	o.cast(m)
-	if _, e := m["number"].(float64); !e {
-		t.FailNow()
-	} else if _, e := m["Final"].(bool); !e {
-		t.FailNow()
-	} else if _, e := m["key"].(float64); !e {
-		t.FailNow()
-	}
-}
-
 func TestGonfTo(t *testing.T) {
 	t.Parallel()
-	o := &Gonf{}
-
-	// set config
 	c := &mockConfig{}
-	o.Configuration = c
+	o := &Gonf{Configuration: c}
 
-	// validate map casts to config correctly and ignores other values
-	o.to(map[string]interface{}{"key": 123, "Key": "banana", "name": "hammock", "Final": true, "Extra": map[string]interface{}{"Data": "123"}})
-	if c.Key != 123 || c.Name != "hammock" || c.Final != true || c.Extra.Data != 0 {
+	// map with edge cases to validate expected behavior
+	m := map[string]interface{}{
+		"number":  15.9,
+		"Number":  "banana",
+		"name":    "hammock",
+		"Boolean": true,
+		"extra":   "pay me no mind",
+		"named":   map[string]interface{}{"Data": 123},
+	}
+
+	// populate configuration and validate properties
+	o.to(m)
+	if c.Number != 15.9 {
+		t.FailNow()
+	} else if c.Name != "hammock" {
+		t.FailNow()
+	} else if c.Boolean != true {
+		t.FailNow()
+	} else if c.Named.Data != 123 {
 		t.FailNow()
 	}
 }
