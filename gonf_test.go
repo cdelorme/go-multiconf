@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/ioutil"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -86,9 +87,50 @@ func TestInitLoad(t *testing.T) {
 	}
 }
 
+func TestSettingString(t *testing.T) {
+	t.Parallel()
+
+	o := setting{
+		Name:        "Name",
+		Description: "Description",
+		Env:         "Env",
+		Options:     []string{"-a:", "-b"},
+	}
+
+	if s := o.String(); s == "" || strings.Contains(s, ":") {
+		t.FailNow()
+	}
+}
+
+func TestSettingMatch(t *testing.T) {
+	t.Parallel()
+
+	o := setting{
+		Name:        "Name",
+		Description: "Description",
+		Env:         "Env",
+		Options:     []string{"-a:", "-b"},
+	}
+
+	// this should not be found
+	if f, g := o.Match("-f"); f || g {
+		t.FailNow()
+	}
+
+	// this should be found, but is not greedy
+	if f, g := o.Match("-b"); !f || g {
+		t.FailNow()
+	}
+
+	// this should be found and is greedy
+	if f, g := o.Match("-a"); !f || !g {
+		t.FailNow()
+	}
+}
+
 func TestGonfMerge(t *testing.T) {
 	t.Parallel()
-	o := Gonf{}
+	o := &Gonf{}
 
 	// maps to test merging and depth
 	m1 := map[string]interface{}{"key": "value", "b": true, "deep": map[string]interface{}{"copy": "me"}, "fail": map[string]interface{}{"no": false}}
@@ -155,7 +197,7 @@ func TestGonfCast(t *testing.T) {
 
 func TestGonfTo(t *testing.T) {
 	t.Parallel()
-	o := Gonf{}
+	o := &Gonf{}
 
 	// set config
 	c := &mockConfig{}
@@ -205,12 +247,15 @@ func TestGonfSet(t *testing.T) {
 }
 
 func TestGonfParseEnvs(t *testing.T) {
-	o := Gonf{}
+	os.Clearenv()
+	os.Args = []string{}
+	o := &Gonf{}
 
-	// register some env vars
-	o.Env("test", "", "MULTICONF_TEST_ENVVAR")
-	o.Env("testing.depth", "", "MULTICONF_TEST_DEPTH")
-	o.Env("testing.depth.deeper", "", "MULTICONF_TEST_DEEPER")
+	// register multiple settings
+	o.Add("test", "", "MULTICONF_TEST_ENVVAR")
+	o.Add("testing.depth", "", "MULTICONF_TEST_DEPTH")
+	o.Add("testing.depth.deeper", "", "MULTICONF_TEST_DEEPER")
+	o.Add("empty", "", "", "-e")
 
 	// set env vars for testing parse
 	os.Setenv("MULTICONF_TEST_ENVVAR", "narp")
@@ -219,6 +264,7 @@ func TestGonfParseEnvs(t *testing.T) {
 
 	// parse env
 	v := o.parseEnvs()
+
 	// verify results
 	if v["test"] != "narp" {
 		t.FailNow()
@@ -230,8 +276,8 @@ func TestGonfParseEnvs(t *testing.T) {
 
 func TestGonfPrivateHelp(t *testing.T) {
 	t.Parallel()
-	o := Gonf{}
-	o.Option("test", "test help cli flag", "-t")
+	o := &Gonf{}
+	o.Add("test", "test help cli flag", "", "-t")
 	o.Example("test help example")
 	code = 1
 
@@ -242,102 +288,163 @@ func TestGonfPrivateHelp(t *testing.T) {
 	}
 }
 
-func TestGonfParseOptions(t *testing.T) {
-	o := &Gonf{}
-	var v map[string]interface{}
+func TestGonfParseLong(t *testing.T) {
+	g := &Gonf{}
 
-	// test without description
-	os.Args = []string{"--help"}
-	code = 1
-	v = o.parseOptions()
-	if code != 1 && len(v) != 0 {
-		t.FailNow()
-	}
+	// register all combinations of flags
+	g.Add("first", "", "", "--first")
+	g.Add("greedy", "", "", "--greedy:")
+	g.Add("second", "", "", "--second")
+	g.Add("test.depth", "", "", "--depth")
+	g.Add("test.depth.deeper", "", "", "--deeper")
 
-	// test all combinations with description
-	o.Description = "Test"
-	os.Args = []string{"help"}
-	code = 1
-	v = o.parseOptions()
-	if code != 0 {
-		t.FailNow()
-	}
-	os.Args = []string{"-h"}
-	code = 1
-	v = o.parseOptions()
-	if code != 0 {
-		t.FailNow()
-	}
-	os.Args = []string{"--help"}
-	code = 1
-	v = o.parseOptions()
-	if code != 0 {
-		t.FailNow()
-	}
-
-	// register flags of all types
-	o.Option("first", "", "--first", "-1")
-	o.Option("greedy", "", "--greedy:", "-g:")
-	o.Option("second", "", "--second", "-2")
-	o.Option("third", "", "--third", "-3")
-	o.Option("fourth", "", "--fourth", "-4:")
-	o.Option("fifth", "", "--fifth", "-5")
-	o.Option("sixth", "", "-6")
-	o.Option("test.depth", "", "--depth")
-	o.Option("test.depth.deeper", "", "--deeper")
-
-	// test long arguments
-	os.Args = []string{"--first=hasvalue", "--second=", "--third", "misc", "ignored", "--fourth", "--greedy", "--first", "--fifth"}
-	v = o.parseOptions()
-	if v["first"] != "hasvalue" || v["second"] != true || v["third"] != "misc" || v["fourth"] != true || v["greedy"] != "--first" || v["fifth"] != true {
-		t.FailNow()
-	}
+	var m map[string]interface{}
 
 	// test bypass
-	os.Args = []string{"--first=hasvalue", "--", "--first=skipped"}
-	v = o.parseOptions()
-	if v["first"] != "hasvalue" {
+	os.Args = []string{"--first", "--", "--first=skipped"}
+	m = g.parseOptions()
+	if m["first"] != true {
 		t.FailNow()
 	}
 
 	// test bypass with greedy
 	os.Args = []string{"--greedy", "--", "--greedy=skipped"}
-	v = o.parseOptions()
-	if v["greedy"] != true {
+	m = g.parseOptions()
+	if m["greedy"] != true {
 		t.FailNow()
 	}
 
 	// test depth support
 	os.Args = []string{"--depth", "--deeper"}
-	v = o.parseOptions()
-	if _, ok := v["test"]; !ok {
+	m = g.parseOptions()
+	if _, ok := m["test"]; !ok {
 		t.FailNow()
 	}
 
-	// test short flags
-	os.Args = []string{"-1", "-g", "-2", "ignored", "-23", "-45", "-5six", "-6", "seven"}
-	v = o.parseOptions()
-	if v["first"] != true || v["second"] != true || v["third"] != true || v["fourth"] != "5" || v["greedy"] != "-2" || v["fifth"] != "six" || v["sixth"] != "seven" {
+	// sunny-day scenario
+	os.Args = []string{"--first=hasvalue", "--second", "hasvalue", "--greedy", "--eats-objects"}
+	m = g.parseOptions()
+	if m["first"] != "hasvalue" || m["second"] != "hasvalue" || m["greedy"] != "--eats-objects" {
+		t.FailNow()
+	}
+}
+
+func TestGonfParseShort(t *testing.T) {
+	g := &Gonf{}
+	g.Add("first", "", "", "-f")
+	g.Add("greedy", "", "", "-g:")
+	g.Add("second", "", "", "-2")
+	g.Add("test.depth", "", "", "-d")
+
+	var m map[string]interface{}
+
+	// with bypass
+	os.Args = []string{"-f", "--", "-2"}
+	m = g.parseOptions()
+	if _, ok := m["second"]; ok || m["first"] != true {
 		t.FailNow()
 	}
 
-	// test short triple-character scenario /w greedy
-	os.Args = []string{"-142"}
-	v = o.parseOptions()
-	if _, ok := v["second"]; ok || v["first"] != true || v["fourth"] != "2" {
+	// greedy with bypass
+	os.Args = []string{"-g", "--", "-2"}
+	m = g.parseOptions()
+	if _, ok := m["second"]; ok || m["greedy"] != true {
 		t.FailNow()
 	}
 
-	// test combination short and long flag with greedy edge-case
-	os.Args = []string{"-4", "--first"}
-	v = o.parseOptions()
-	if _, ok := v["first"]; ok || v["fourth"] != "--first" {
+	// combination of flags starting with greedy
+	os.Args = []string{"-gf2"}
+	m = g.parseOptions()
+	if len(m) != 1 || m["greedy"] != "f2" {
+		t.FailNow()
+	}
+
+	// combination of flags
+	os.Args = []string{"-f2d"}
+	m = g.parseOptions()
+	if _, ok := m["test"]; !ok || m["first"] != true || m["second"] != true {
+		t.FailNow()
+	}
+
+	// combination of flags ending in greedy
+	os.Args = []string{"-f2g"}
+	m = g.parseOptions()
+	if m["first"] != true || m["second"] != true || m["greedy"] != true {
+		t.FailNow()
+	}
+
+	// combination with separate for final property
+	os.Args = []string{"-f2", "yarp"}
+	m = g.parseOptions()
+	if m["first"] != true || m["second"] != "yarp" {
+		t.FailNow()
+	}
+
+	// combination ending with greedy with separate for final property
+	os.Args = []string{"-f2g", "yarp"}
+	m = g.parseOptions()
+	if m["first"] != true || m["second"] != true || m["greedy"] != "yarp" {
+		t.FailNow()
+	}
+}
+
+func TestGonfParseOptions(t *testing.T) {
+	os.Clearenv()
+
+	g := &Gonf{Description: "testing parse options"}
+	g.Add("key", "test", "", "-k", "--key")
+	var m map[string]interface{}
+
+	// test bypass
+	os.Args = []string{"--"}
+	m = g.parseOptions()
+	if len(m) != 0 {
+		t.FailNow()
+	}
+
+	// test help in all three standard forms
+	code, os.Args = 1, []string{"help"}
+	m = g.parseOptions()
+	if m != nil || code != 0 {
+		t.FailNow()
+	}
+
+	code, os.Args = 1, []string{"-h"}
+	m = g.parseOptions()
+	if m != nil || code != 0 {
+		t.FailNow()
+	}
+
+	code, os.Args = 1, []string{"--help"}
+	m = g.parseOptions()
+	if m != nil || code != 0 {
+		t.FailNow()
+	}
+
+	// test last help format without a description
+	g.Description = ""
+	m = g.parseOptions()
+	if m == nil {
+		t.FailNow()
+	}
+
+	// test invalid
+	os.Args = []string{"blah"}
+	m = g.parseOptions()
+	if len(m) != 0 {
+		t.FailNow()
+	}
+
+	// test short and long
+	os.Args = []string{"-k", "--key"}
+	m = g.parseOptions()
+	if m["key"] != true {
 		t.FailNow()
 	}
 }
 
 func TestGonfParseFiles(t *testing.T) {
-	o := Gonf{Configuration: &mockConfig{}}
+	o := &Gonf{Configuration: &mockConfig{}}
 	v := map[string]interface{}{}
 
 	// test with error response
@@ -374,50 +481,36 @@ func TestGonfParseFiles(t *testing.T) {
 
 func TestGonfPublicLoad(t *testing.T) {
 	c := &mockConfig{Name: "casey"}
-	o := Gonf{Configuration: c}
+	o := &Gonf{Configuration: c}
 
 	// override readfile, and verify load
 	filedata = `{}`
 	o.Load()
 
-	// verify log output
+	// verify execution by checking name
 	if c.Name != "casey" {
 		t.FailNow()
 	}
 }
 
-func TestGonfPublicEnv(t *testing.T) {
+func TestGonfPublicAdd(t *testing.T) {
 	t.Parallel()
 
-	o := Gonf{}
+	o := &Gonf{}
 
-	// good, bad, bad
-	o.Env("env", "", "ENV")
-	o.Env("", "", "ENV")
-	o.Env("env", "", "")
-
-	if len(o.envs) != 1 {
-		t.Logf("%+v\n", o)
+	// none of these should get added
+	o.Add("", "", "")
+	o.Add("nameonly", "", "")
+	o.Add("nameanddesc", "description but nothing else", "")
+	if len(o.settings) > 0 {
 		t.FailNow()
 	}
-}
 
-func TestGonfPublicOption(t *testing.T) {
-	t.Parallel()
-
-	o := Gonf{}
-
-	// good
-	o.Option("option", "", "-o", "--option")
-	o.Option("option", "", "o", "option")
-	o.Option("option", "", "op")
-
-	// bad
-	o.Option("", "-o", "", "--option")
-	o.Option("option", "")
-
-	// verify by count
-	if len(o.long) != 3 || len(o.short) != 2 {
+	// next let's try some good ones
+	o.Add("nameandenv", "", "ENV")
+	o.Add("namedescandoptions", "description with an option", "", "-n")
+	o.Add("allfieldsplus", "all fields with multiple options", "ALLFP", "--all", "-a")
+	if len(o.settings) != 3 {
 		t.FailNow()
 	}
 }

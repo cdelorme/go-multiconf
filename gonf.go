@@ -76,22 +76,33 @@ func init() {
 	load()
 }
 
-type option struct {
-	Key         string
-	Description string
-	Flags       []string
-}
-
-type parse struct {
-	Greedy bool
-	Flag   string
-	Option *option
-}
-
-type env struct {
-	Key         string
+type setting struct {
 	Name        string
 	Description string
+	Env         string
+	Options     []string
+}
+
+func (self *setting) String() string {
+	var o string
+	if len(self.Options) > 0 {
+		o = strings.Replace(strings.Join(self.Options, ", "), ":", "", -1)
+	}
+	if self.Env != "" {
+		o += " (" + self.Env + ")"
+	}
+	return fmt.Sprintf("%-30s\t%s\n", o, self.Description)
+}
+
+func (self *setting) Match(in string) (bool, bool) {
+	for _, o := range self.Options {
+		if o == in {
+			return true, false
+		} else if o == in+":" {
+			return true, true
+		}
+	}
+	return false, false
 }
 
 type Gonf struct {
@@ -100,10 +111,7 @@ type Gonf struct {
 	paths         []string
 	examples      []string
 	file          string
-	options       []option
-	long          []parse
-	short         []parse
-	envs          []env
+	settings      []setting
 }
 
 func (self *Gonf) merge(maps ...map[string]interface{}) map[string]interface{} {
@@ -207,9 +215,12 @@ func (self *Gonf) set(cursor map[string]interface{}, key string, value interface
 
 func (self *Gonf) parseEnvs() map[string]interface{} {
 	vars := make(map[string]interface{})
-	for _, e := range self.envs {
-		if v := os.Getenv(e.Name); len(v) > 0 {
-			self.set(vars, e.Key, v)
+	for _, s := range self.settings {
+		if s.Env == "" {
+			continue
+		}
+		if v := os.Getenv(s.Env); len(v) > 0 {
+			self.set(vars, s.Name, v)
 		}
 	}
 	return vars
@@ -219,94 +230,79 @@ func (self *Gonf) help(discontinue bool) {
 	print(stdout, "[%s]: %s\n\n", appName, self.Description)
 	print(stdout, "\nFlags:\n")
 	print(stdout, "%-30s\t%s\n", "help, -h, --help", "display help information")
-	for _, option := range self.options {
-		print(stdout, "%-30s\t%s\n", strings.Join(option.Flags, ", "), option.Description)
+	for _, o := range self.settings {
+		print(stdout, "%s", o)
 	}
 	if len(self.examples) > 0 {
 		print(stdout, "\nUsage:\n")
-		for _, e := range self.examples {
-			print(stdout, "%s %s\n", appName, e)
-		}
+	}
+	for _, e := range self.examples {
+		print(stdout, "%s %s\n", appName, e)
 	}
 	if discontinue {
 		exit(0)
 	}
 }
 
-func (self *Gonf) parseOptions() map[string]interface{} {
-	vars := make(map[string]interface{})
-
-	var skip bool
-	for idx, arg := range os.Args {
-		if len(self.Description) > 0 && (arg == "help" || arg == "-h" || arg == "--help") {
-			self.help(true)
-			return nil
-		} else if skip || !strings.HasPrefix(arg, "-") || len(arg) == 1 {
-			skip = false
+func (self *Gonf) parseLong(i *int, m map[string]interface{}) {
+	var y, g bool
+	argv := strings.SplitN(os.Args[*i], "=", 2)
+	for _, s := range self.settings {
+		if y, g = s.Match(argv[0]); !y {
 			continue
-		} else if arg == "--" {
-			break
 		}
+		switch {
+		case len(argv) == 1 && *i+1 < len(os.Args) && os.Args[*i+1] != "--" && (!strings.HasPrefix(os.Args[*i+1], "-") || g):
+			*i++
+			self.set(m, s.Name, os.Args[*i])
+		case len(argv) == 2 && argv[1] != "":
+			self.set(m, s.Name, argv[1])
+		default:
+			self.set(m, s.Name, true)
+		}
+	}
+}
 
-		if strings.HasPrefix(arg, "--") {
-			for _, long := range self.long {
-				if strings.HasPrefix(arg, "--"+long.Flag) {
-					if s := strings.Split(arg, "="); len(s) == 2 {
-						if len(s[1]) > 0 {
-							self.set(vars, long.Option.Key, s[1])
-						} else {
-							self.set(vars, long.Option.Key, true)
-						}
-					} else if idx+1 < len(os.Args) {
-						if os.Args[idx+1] != "--" && (!strings.HasPrefix(os.Args[idx+1], "-") || long.Greedy) {
-							skip = true
-							self.set(vars, long.Option.Key, os.Args[idx+1])
-						} else {
-							self.set(vars, long.Option.Key, true)
-						}
-					} else {
-						self.set(vars, long.Option.Key, true)
-					}
-				}
+func (self *Gonf) parseShort(i *int, m map[string]interface{}) {
+	var y, g bool
+	a := strings.TrimPrefix(os.Args[*i], "-")
+	for ci, c := range a {
+		for _, s := range self.settings {
+			if y, g = s.Match("-" + string(c)); !y {
+				continue
 			}
-		} else {
-			s := strings.TrimPrefix(arg, "-")
-			var cskip bool
-			for idc, c := range s {
-				for _, short := range self.short {
-					if string(c) == short.Flag {
-						if idc == (len(s) - 1) {
-							if idx+1 < len(os.Args) && os.Args[idx+1] != "--" && (!strings.HasPrefix(os.Args[idx+1], "-") || short.Greedy) {
-								self.set(vars, short.Option.Key, os.Args[idx+1])
-								skip = true
-								break
-							} else {
-								vars[short.Option.Key] = true
-							}
-						} else {
-							self.set(vars, short.Option.Key, string(s[idc+1:]))
-							if !short.Greedy {
-								for _, si := range self.short {
-									if string(s[idc+1]) == si.Flag {
-										self.set(vars, short.Option.Key, true)
-										break
-									}
-								}
-							} else {
-								cskip = true
-								break
-							}
-						}
-					}
-					if cskip {
-						cskip = false
-						break
-					}
-				}
+			switch {
+			case ci+1 >= len(a) && *i+1 < len(os.Args) && os.Args[*i+1] != "--" && (!strings.HasPrefix(os.Args[*i+1], "-") || g):
+				*i++
+				self.set(m, s.Name, os.Args[*i])
+			case ci+1 < len(a) && g:
+				self.set(m, s.Name, a[ci+1:])
+				return
+			default:
+				self.set(m, s.Name, true)
 			}
 		}
 	}
+}
 
+func (self *Gonf) parseOptions() map[string]interface{} {
+	vars := map[string]interface{}{}
+	for i := 0; i < len(os.Args); i++ {
+		if arg := os.Args[i]; arg == "--" {
+			break
+		} else if len(self.Description) > 0 && (arg == "help" || arg == "-h" || arg == "--help") {
+			self.help(true)
+			return nil
+		} else if len(arg) == 1 || !strings.HasPrefix(arg, "-") {
+			continue
+		}
+
+		if arg := os.Args[i]; strings.HasPrefix(arg, "--") {
+			self.parseLong(&i, vars)
+		} else {
+			self.parseShort(&i, vars)
+		}
+	}
 	return vars
 }
 
@@ -344,41 +340,16 @@ func (self *Gonf) Load(p ...string) {
 	}
 }
 
-func (self *Gonf) Env(key, description, name string) {
-	if len(key) == 0 || len(name) == 0 {
+func (self *Gonf) Add(name, description, env string, options ...string) {
+	if name == "" || (env == "" && len(options) == 0) {
 		return
 	}
-
-	self.envs = append(self.envs, env{Key: key, Description: description, Name: name})
-}
-
-func (self *Gonf) Option(key, description string, flags ...string) {
-	if len(key) == 0 {
-		return
-	}
-
-	o := option{Key: key, Description: description}
-
-	for _, flag := range flags {
-		p := parse{
-			Greedy: strings.HasSuffix(flag, ":"),
-			Flag:   strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(flag, "-"), "-"), ":"),
-			Option: &o,
-		}
-		if len(p.Flag) == 1 {
-			self.short = append(self.short, p)
-			o.Flags = append(o.Flags, "-"+p.Flag)
-		} else if len(p.Flag) > 1 {
-			self.long = append(self.long, p)
-			o.Flags = append(o.Flags, "--"+p.Flag)
-		}
-	}
-
-	if len(o.Flags) == 0 {
-		return
-	}
-
-	self.options = append(self.options, o)
+	self.settings = append(self.settings, setting{
+		Name:        name,
+		Description: description,
+		Env:         env,
+		Options:     options,
+	})
 }
 
 func (self *Gonf) Example(example string) {
