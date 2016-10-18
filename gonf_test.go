@@ -453,7 +453,7 @@ func TestGonfParseFiles(t *testing.T) {
 	// test with error response
 	o.paths = []string{"nope"}
 	fileerror = mockError
-	v = o.parseFiles()
+	v = o.parseFiles(paths...)
 	if len(v) > 0 {
 		t.FailNow()
 	}
@@ -461,7 +461,7 @@ func TestGonfParseFiles(t *testing.T) {
 
 	// test with invalid json
 	filedata = `not json`
-	v = o.parseFiles()
+	v = o.parseFiles(paths...)
 	if len(v) > 0 {
 		t.FailNow()
 	}
@@ -476,7 +476,7 @@ func TestGonfParseFiles(t *testing.T) {
 		},
 		"Final": true
 	}`
-	v = o.parseFiles()
+	v = o.parseFiles(paths...)
 	if v["name"] != "casey" || v["Final"] != true || v["key"] != float64(123) {
 		t.FailNow()
 	}
@@ -484,15 +484,46 @@ func TestGonfParseFiles(t *testing.T) {
 
 func TestGonfPublicLoad(t *testing.T) {
 	c := &mockConfig{Name: "casey"}
-	o := &Gonf{Configuration: c}
+	g := &Gonf{Configuration: c}
+	g.Add("name", "test-overrides-from-public-load", "TEST_NAME", "-a:")
 
-	// override readfile, and verify load
-	filedata = `{}`
-	o.Load()
+	// clear all inputs
+	filedata = ""
+	os.Clearenv()
+	os.Args = []string{}
 
-	// verify execution by checking name
+	// verify defaults remain with no contents
+	g.Load()
 	if c.Name != "casey" {
+		t.Logf("defaults failed to stick: %s", c.Name)
 		t.FailNow()
+	}
+
+	// verify file overrides default
+	filedata = `{"name": "banana"}`
+	g.Load()
+	if c.Name != "banana" {
+		t.Logf("file failed to modify defaults: %s", c.Name)
+		// t.FailNow()
+		t.Fail()
+	}
+
+	// @todo: verify env overrides file
+	os.Setenv("TEST_NAME", "hammock")
+	g.Load()
+	if c.Name != "hammock" {
+		t.Logf("env failed to override file: %s", c.Name)
+		// t.FailNow()
+		t.Fail()
+	}
+
+	// @todo: verify cli overrides env
+	os.Args = []string{"-ahurrah"}
+	g.Load()
+	if c.Name != "hurrah" {
+		t.Logf("cli failed to override env: %s", c.Name)
+		// t.FailNow()
+		t.Fail()
 	}
 }
 

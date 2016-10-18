@@ -110,7 +110,6 @@ type Gonf struct {
 	Description   string
 	paths         []string
 	examples      []string
-	file          string
 	settings      []setting
 }
 
@@ -302,10 +301,10 @@ func (self *Gonf) parseOptions() map[string]interface{} {
 	return vars
 }
 
-func (self *Gonf) parseFiles() map[string]interface{} {
+func (self *Gonf) parseFiles(paths ...string) map[string]interface{} {
 	vars := make(map[string]interface{})
 
-	for _, f := range self.paths {
+	for _, f := range paths {
 		data, err := readfile(f)
 		if err != nil {
 			continue
@@ -321,16 +320,7 @@ func (self *Gonf) parseFiles() map[string]interface{} {
 }
 
 func (self *Gonf) Load(p ...string) {
-	self.paths = append(paths, p...)
-
-	maps := []map[string]interface{}{}
-
-	maps = append(maps, self.parseOptions())
-	maps = append(maps, self.parseEnvs())
-	maps = append(maps, self.parseFiles())
-
-	self.to(maps...)
-
+	self.to(self.parseFiles(append(p, paths...)...), self.parseEnvs(), self.parseOptions())
 	if c, e := self.Configuration.(callbacker); e {
 		c.Callback()
 	}
