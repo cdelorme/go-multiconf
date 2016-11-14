@@ -222,17 +222,17 @@ func (self *Gonf) parseEnvs() map[string]interface{} {
 }
 
 func (self *Gonf) help(discontinue bool) {
-	print(stdout, "[%s]: %s\n\n", appName, self.Description)
-	print(stdout, "\nFlags:\n")
-	print(stdout, "%-30s\t%s\n", "help, -h, --help", "display help information")
+	print(stdout, "[%s]\nDescription:\n\t%s\n", appName, self.Description)
+	print(stdout, "\n\nFlags:\n\n")
+	print(stdout, "\t%s\n\t\t%s\n\n", "help, -h, --help", "display help information")
 	for _, o := range self.settings {
-		print(stdout, "%s", o)
+		print(stdout, "\t%s\n\t\t%s\n\n", strings.Join(o.Options, ", "), o.Description)
 	}
 	if len(self.examples) > 0 {
-		print(stdout, "\nUsage:\n")
+		print(stdout, "\n\nUsage:\n\n")
 	}
 	for _, e := range self.examples {
-		print(stdout, "%s %s\n", appName, e)
+		print(stdout, "\t%s %s\n", appName, e)
 	}
 	if discontinue {
 		exit(0)
