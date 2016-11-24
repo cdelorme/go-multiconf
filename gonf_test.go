@@ -8,13 +8,10 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
+	"time"
 )
-
-var mockError = errors.New("mock error")
-var code int
-var filedata string
-var fileerror error
 
 type mockLogger struct {
 	Store string
@@ -38,6 +35,23 @@ func (self mockCompositeConfig) GoString() string              { return self.Str
 func (self *mockCompositeConfig) MarshalJSON() ([]byte, error) { return []byte(self.String()), nil }
 func (self *mockCompositeConfig) Callback()                    {}
 
+// mockStat (shamelessly "borrowed" from `types_unix.go`)
+type mockStat struct {
+	name    string
+	size    int64
+	mode    os.FileMode
+	modTime time.Time
+	sys     interface{}
+	dir     bool
+}
+
+func (self *mockStat) Name() string       { return self.name }
+func (self *mockStat) Size() int64        { return self.size }
+func (self *mockStat) IsDir() bool        { return self.dir }
+func (self *mockStat) Mode() os.FileMode  { return self.mode }
+func (self *mockStat) ModTime() time.Time { return self.modTime }
+func (self *mockStat) Sys() interface{}   { return &self.sys }
+
 // parent level structure demonstrating the use of composition
 // to induce dynamic functionality (locking & logging)
 // while also demonstrating correct handling of property conflicts
@@ -58,10 +72,23 @@ type mockConfig struct {
 	} `json:"named,omitempty"`
 }
 
+var (
+	code          int
+	filedata      string
+	mockError     = errors.New("mock error")
+	fileerror     error
+	createerror   error
+	mockFileStat  = &mockStat{modTime: time.Now()}
+	mockStatError error
+)
+
 func init() {
 	stdout = ioutil.Discard
 	exit = func(c int) { code = c }
 	readfile = func(name string) ([]byte, error) { return []byte(filedata), fileerror }
+	create = func(_ string) (*os.File, error) { return nil, createerror }
+	stat = func(_ string) (os.FileInfo, error) { return mockFileStat, mockStatError }
+	mkdirall = func(_ string, _ os.FileMode) error { return nil }
 	print = func(_ io.Writer, _ string, _ ...interface{}) (int, error) { return 0, nil }
 }
 
@@ -73,24 +100,34 @@ func TestPlacebo(t *testing.T) {
 }
 
 func TestInitLoad(t *testing.T) {
+	os.Clearenv()
+
+	load()
+	if len(paths) != 1 {
+		t.FailNow()
+	}
+
+	os.Setenv("HOME", "/tmp")
+	load()
+	if len(paths) != 2 {
+		t.FailNow()
+	}
+
+	os.Setenv("XDG_CONFIG_HOME", "/tmp/xdg")
+	load()
+	if len(paths) != 2 {
+		t.FailNow()
+	}
+
+	goos = "darwin"
+	load()
+	if len(paths) != 2 {
+		t.FailNow()
+	}
+
 	os.Setenv("APPDATA", "testappdata")
-	os.Setenv("XDG_CONFIG_DIR", "testxdgdir")
-	os.Unsetenv("HOME")
 	load()
-	if len(paths) != 8 {
-		t.FailNow()
-	}
-
-	os.Unsetenv("APPDATA")
-	os.Unsetenv("XDG_CONFIG_DIR")
-	load()
-	if len(paths) != 5 {
-		t.FailNow()
-	}
-
-	os.Setenv("HOME", "testhomedir")
-	load()
-	if len(paths) != 5 {
+	if len(paths) != 2 {
 		t.FailNow()
 	}
 }
@@ -446,27 +483,37 @@ func TestGonfParseOptions(t *testing.T) {
 	}
 }
 
-func TestGonfParseFiles(t *testing.T) {
+func TestGonfComment(t *testing.T) {
+	g := Gonf{}
+
+	before := []byte(`{
+	// remove this
+	//remove this
+	"key": " // keep this" // remove this
+	/ / keep bad syntax
+/*
+	"removed": "this is removed"
+	*/
+	"keep": " /* this is to be kept*/"
+	/*"termination": "can happen inside quotes*/"
+}`)
+	after := []byte(`{
+			"key": " // keep this" 	/ / keep bad syntax
+
+	"keep": " /* this is to be kept*/"
+	"
+}`)
+
+	// verify that we strip single and multi-line comments outside quotes
+	if o := g.comment(before); string(o) != string(after) {
+		t.FailNow()
+	}
+}
+
+func TestGonfReadfile(t *testing.T) {
 	o := &Gonf{Configuration: &mockConfig{}}
-	v := map[string]interface{}{}
 
-	// test with error response
-	o.paths = []string{"nope"}
-	fileerror = mockError
-	v = o.parseFiles(paths...)
-	if len(v) > 0 {
-		t.FailNow()
-	}
-	fileerror = nil
-
-	// test with invalid json
-	filedata = `not json`
-	v = o.parseFiles(paths...)
-	if len(v) > 0 {
-		t.FailNow()
-	}
-
-	// test with valid json
+	// test successful return
 	filedata = `{
 		"key": 123,
 		"name": "casey",
@@ -476,13 +523,86 @@ func TestGonfParseFiles(t *testing.T) {
 		},
 		"Final": true
 	}`
-	v = o.parseFiles(paths...)
-	if v["name"] != "casey" || v["Final"] != true || v["key"] != float64(123) {
+	if v, e := o.readfile(); e != nil || len(v) == 0 {
+		t.FailNow()
+	}
+
+	// test json parsing error
+	filedata = `not valid json`
+	o.configModified = time.Time{}
+	if v, e := o.readfile(); e == nil || len(v) != 0 {
+		t.FailNow()
+	}
+
+	// test readfile error
+	fileerror = mockError
+	o.configModified = time.Time{}
+	if v, e := o.readfile(); e == nil || len(v) != 0 {
+		t.FailNow()
+	}
+
+	// test configModified
+	o.configModified = mockFileStat.modTime
+	if v, e := o.readfile(); e != nil || len(v) != 0 {
 		t.FailNow()
 	}
 }
 
+func TestGonfParseFiles(t *testing.T) {
+	o := &Gonf{Configuration: &mockConfig{}}
+	paths = []string{"/tmp/nope"}
+
+	// test no files (empty data)
+	fileerror = mockError
+	if v := o.parseFiles(appName); len(v) > 0 {
+		t.FailNow()
+	}
+
+	// test file match /w valid filedata
+	fileerror = nil
+	filedata = `{
+		"key": 123,
+		"name": "casey",
+		"extra": {
+			"data": 123,
+			"correct": true
+		},
+		"Final": true
+	}`
+	o.configFile = ""
+	if v := o.parseFiles(appName); len(v) == 0 {
+		t.FailNow()
+	}
+
+	// test from existing configFile
+	o.configModified = time.Time{}
+	if v := o.parseFiles(appName); len(v) == 0 {
+		t.FailNow()
+	}
+}
+
+func TestGonfPublicReload(_ *testing.T) {
+	g := &Gonf{Configuration: &mockConfig{}}
+	g.Reload()
+}
+
+func TestGonfPublicSave(_ *testing.T) {
+	g := &Gonf{Configuration: &mockConfig{}}
+
+	// test empty configuration file
+	g.Save()
+
+	// test valid configuration file
+	g.configFile = "/tmp/gonf"
+	g.Save()
+
+	// test with save fail
+	createerror = mockError
+	g.Save()
+}
+
 func TestGonfPublicLoad(t *testing.T) {
+	goos = "linux"
 	c := &mockConfig{Name: "casey"}
 	g := &Gonf{Configuration: c}
 	g.Add("name", "test-overrides-from-public-load", "TEST_NAME", "-a:")
@@ -495,35 +615,31 @@ func TestGonfPublicLoad(t *testing.T) {
 	// verify defaults remain with no contents
 	g.Load()
 	if c.Name != "casey" {
-		t.Logf("defaults failed to stick: %s", c.Name)
 		t.FailNow()
 	}
+
+	// test passing a signal
+	g.sighup <- syscall.SIGHUP
 
 	// verify file overrides default
 	filedata = `{"name": "banana"}`
 	g.Load()
 	if c.Name != "banana" {
-		t.Logf("file failed to modify defaults: %s", c.Name)
-		// t.FailNow()
-		t.Fail()
+		t.FailNow()
 	}
 
-	// @todo: verify env overrides file
+	// verify env overrides file /w supplied parameters to test filtering empty strings
 	os.Setenv("TEST_NAME", "hammock")
-	g.Load()
+	g.Load("", "test", "", "empty", "")
 	if c.Name != "hammock" {
-		t.Logf("env failed to override file: %s", c.Name)
-		// t.FailNow()
-		t.Fail()
+		t.FailNow()
 	}
 
-	// @todo: verify cli overrides env
+	// verify cli overrides env
 	os.Args = []string{"-ahurrah"}
 	g.Load()
 	if c.Name != "hurrah" {
-		t.Logf("cli failed to override env: %s", c.Name)
-		// t.FailNow()
-		t.Fail()
+		t.FailNow()
 	}
 }
 
@@ -559,4 +675,11 @@ func TestGonfPublicHelp(t *testing.T) {
 	t.Parallel()
 	o := &Gonf{}
 	o.Help()
+}
+
+func TestGonfConfigFile(t *testing.T) {
+	g := Gonf{configFile: "test.txt"}
+	if g.ConfigFile() != g.configFile {
+		t.FailNow()
+	}
 }

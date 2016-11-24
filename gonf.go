@@ -6,11 +6,16 @@ import (
 	"io"
 	"io/ioutil"
 	"os"
-	"os/user"
+	"os/signal"
 	"path/filepath"
 	"reflect"
+	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
+	"time"
 )
 
 type locker interface {
@@ -27,47 +32,37 @@ type callbacker interface {
 	Callback()
 }
 
-var print func(io.Writer, string, ...interface{}) (int, error) = fmt.Fprintf
-var stdout io.Writer = os.Stdout
-var exit = os.Exit
-var readfile = ioutil.ReadFile
-var exts = []string{"", ".json", ".conf"}
-var paths []string
-var appName string
+var (
+	print              = fmt.Fprintf
+	stdout   io.Writer = os.Stdout
+	exit               = os.Exit
+	readfile           = ioutil.ReadFile
+	mkdirall           = os.MkdirAll
+	create             = os.Create
+	stat               = os.Stat
+	goos               = runtime.GOOS
+	appPath            = os.Args[0]
+	appName            = strings.TrimSuffix(filepath.Base(appPath), filepath.Ext(appPath))
+	paths    []string
+)
 
 func load() {
 	paths = []string{}
-	appName = filepath.Base(os.Args[0])
-
-	if p, e := filepath.EvalSymlinks(os.Args[0]); e == nil {
+	if p, e := filepath.EvalSymlinks(appPath); e == nil {
 		if a, e := filepath.Abs(p); e == nil {
-			for _, e := range exts[1:] {
-				paths = append(paths, filepath.Join(filepath.Dir(a), appName+e))
-			}
+			paths = append(paths, filepath.Join(filepath.Dir(a)))
 		}
 	}
 
-	if p := os.Getenv("APPDATA"); p != "" {
-		for _, e := range exts {
-			paths = append(paths, filepath.Join(p, appName, appName+e))
-		}
-	}
-
-	if xdg := os.Getenv("XDG_CONFIG_DIR"); xdg != "" {
-		for _, p := range strings.Split(xdg, ":") {
-			for _, e := range exts {
-				paths = append(paths, filepath.Join(p, appName, appName+e))
-			}
-		}
-	} else {
-		home := os.Getenv("HOME")
-		if home == "" {
-			if u, err := user.Current(); err == nil {
-				home = u.HomeDir
-			}
-		}
-		for _, e := range exts {
-			paths = append(paths, filepath.Join(home, ".config", appName, appName+e))
+	if appData := os.Getenv("APPDATA"); appData != "" {
+		paths = append(paths, filepath.Join(appData, "Roaming"))
+	} else if home := os.Getenv("HOME"); home != "" {
+		if goos == "darwin" {
+			paths = append(paths, filepath.Join(home, "Library", "Preferences"))
+		} else if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+			paths = append(paths, xdg)
+		} else {
+			paths = append(paths, filepath.Join(home, ".config"))
 		}
 	}
 }
@@ -106,11 +101,14 @@ func (self *setting) Match(in string) (bool, bool) {
 }
 
 type Gonf struct {
-	Configuration interface{}
-	Description   string
-	paths         []string
-	examples      []string
-	settings      []setting
+	sync.RWMutex
+	Configuration  interface{}
+	Description    string
+	configFile     string
+	configModified time.Time
+	examples       []string
+	settings       []setting
+	sighup         chan os.Signal
 }
 
 func (self *Gonf) merge(maps ...map[string]interface{}) map[string]interface{} {
@@ -173,6 +171,8 @@ func (self *Gonf) cast(o interface{}, m map[string]interface{}, discard map[stri
 }
 
 func (self *Gonf) to(data ...map[string]interface{}) {
+	self.Lock()
+	defer self.Unlock()
 	combo := self.merge(data...)
 	if self.Configuration != nil {
 		if c, e := self.Configuration.(locker); e {
@@ -222,6 +222,8 @@ func (self *Gonf) parseEnvs() map[string]interface{} {
 }
 
 func (self *Gonf) help(discontinue bool) {
+	self.RLock()
+	defer self.RUnlock()
 	print(stdout, "[%s]\nDescription:\n\t%s\n", appName, self.Description)
 	print(stdout, "\n\nFlags:\n\n")
 	print(stdout, "\t%s\n\t\t%s\n\n", "help, -h, --help", "display help information")
@@ -301,28 +303,118 @@ func (self *Gonf) parseOptions() map[string]interface{} {
 	return vars
 }
 
-func (self *Gonf) parseFiles(paths ...string) map[string]interface{} {
-	vars := make(map[string]interface{})
+func (self *Gonf) comment(data []byte) []byte {
+	re := regexp.MustCompile(`(?:/\*[^*]*\*+(?:[^/*][^*]*\*+)*/|//[^\n]*(?:\n|$)|#[^\n]*(?:\n|$))|("[^"\\]*(?:\\[\S\s][^"\\]*)*"|'[^'\\]*(?:\\[\S\s][^'\\]*)*'|[\S\s][^/"'\\]*)`)
+	return re.ReplaceAll(data, []byte("$1"))
+}
 
-	for _, f := range paths {
-		data, err := readfile(f)
-		if err != nil {
-			continue
-		}
-		if e := json.Unmarshal(data, &vars); e == nil {
-			return vars
-		} else if c, ok := self.Configuration.(logger); ok {
-			c.Debug("failed to parse %s (%s)", f, e)
+func (self *Gonf) readfile() (map[string]interface{}, error) {
+	vars := make(map[string]interface{})
+	self.Lock()
+	defer self.Unlock()
+
+	modTime := self.configModified
+	if fi, err := stat(self.configFile); err == nil {
+		if modTime = fi.ModTime(); modTime == self.configModified {
+			return vars, nil
 		}
 	}
 
+	data, err := readfile(self.configFile)
+	if err != nil {
+		return vars, err
+	}
+
+	if err := json.Unmarshal(self.comment(data), &vars); err != nil {
+		if c, ok := self.Configuration.(logger); ok {
+			c.Debug("failed to parse %s (%s)", self.configFile, err)
+		}
+		return vars, err
+	}
+
+	self.configModified = modTime
+	return vars, nil
+}
+
+func (self *Gonf) parseFiles(filenames ...string) map[string]interface{} {
+	vars := make(map[string]interface{})
+
+	if self.ConfigFile() != "" {
+		vars, _ := self.readfile()
+		return vars
+	}
+
+	for _, p := range paths {
+		for _, f := range filenames {
+			self.Lock()
+			self.configFile = filepath.Join(p, f)
+			self.Unlock()
+			if vars, err := self.readfile(); err == nil {
+				return vars
+			}
+		}
+	}
+
+	self.Lock()
+	self.configFile = filepath.Join(paths[len(paths)-1], filenames[0])
+	self.Unlock()
+	self.Save()
 	return vars
 }
 
-func (self *Gonf) Load(p ...string) {
-	self.to(self.parseFiles(append(p, paths...)...), self.parseEnvs(), self.parseOptions())
+func (self *Gonf) signal() {
+	for _ = range self.sighup {
+		self.Reload()
+	}
+}
+
+func (self *Gonf) Reload() {
+	if v, err := self.readfile(); err == nil && len(v) > 0 {
+		self.to(v)
+		if c, e := self.Configuration.(callbacker); e {
+			c.Callback()
+		}
+	}
+}
+
+func (self *Gonf) Save() {
+	self.RLock()
+	defer self.RUnlock()
+	if self.configFile == "" {
+		return
+	}
+
+	mkdirall(filepath.Dir(self.configFile), 0775)
+	f, err := create(self.configFile)
+	if err != nil {
+		if c, ok := self.Configuration.(logger); ok {
+			c.Debug("failed to save %s (%s)", self.configFile, err)
+		}
+		return
+	}
+	defer f.Close()
+
+	json.NewEncoder(f).Encode(self.Configuration)
+}
+
+func (self *Gonf) Load(filenames ...string) {
+	for i := len(filenames) - 1; i >= 0; i-- {
+		if filenames[i] == "" {
+			filenames = append(filenames[:i], filenames[i+1:]...)
+		}
+	}
+
+	self.to(self.parseFiles(append(filenames, appName+".json")...), self.parseEnvs(), self.parseOptions())
 	if c, e := self.Configuration.(callbacker); e {
 		c.Callback()
+	}
+
+	self.Lock()
+	defer self.Unlock()
+	if goos != "windows" && self.sighup == nil {
+		self.sighup = make(chan os.Signal)
+		go self.signal()
+		signal.Notify(self.sighup, syscall.SIGHUP)
 	}
 }
 
@@ -330,18 +422,28 @@ func (self *Gonf) Add(name, description, env string, options ...string) {
 	if name == "" || (env == "" && len(options) == 0) {
 		return
 	}
+	self.Lock()
 	self.settings = append(self.settings, setting{
 		Name:        name,
 		Description: description,
 		Env:         env,
 		Options:     options,
 	})
+	self.Unlock()
 }
 
 func (self *Gonf) Example(example string) {
+	self.Lock()
 	self.examples = append(self.examples, example)
+	self.Unlock()
 }
 
 func (self *Gonf) Help() {
 	self.help(false)
+}
+
+func (self *Gonf) ConfigFile() string {
+	self.RLock()
+	defer self.RUnlock()
+	return self.configFile
 }
