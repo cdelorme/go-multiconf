@@ -394,7 +394,9 @@ func (self *Gonf) Save() {
 	}
 	defer f.Close()
 
-	json.NewEncoder(f).Encode(self.Configuration)
+	enc := json.NewEncoder(f)
+	enc.SetIndent("", "\t")
+	enc.Encode(self.Configuration)
 }
 
 func (self *Gonf) Load(filenames ...string) {
