@@ -1,3 +1,8 @@
+/*
+Package gonf provides the Gonf utility to combine configuration methods including cli flags, environment variables, and json configuration files at common paths.
+
+It automatically determines the application name, and uses that when searching OS specific paths for configuration files, as well as when printing help output.  It supports sighup config file reloads on non-windows platforms.  It is concurrently safe.
+*/
 package gonf
 
 import (
@@ -78,19 +83,19 @@ type setting struct {
 	Options     []string
 }
 
-func (self *setting) String() string {
+func (s *setting) String() string {
 	var o string
-	if len(self.Options) > 0 {
-		o = strings.Replace(strings.Join(self.Options, ", "), ":", "", -1)
+	if len(s.Options) > 0 {
+		o = strings.Replace(strings.Join(s.Options, ", "), ":", "", -1)
 	}
-	if self.Env != "" {
-		o += " (" + self.Env + ")"
+	if s.Env != "" {
+		o += " (" + s.Env + ")"
 	}
-	return fmt.Sprintf("%-30s\t%s\n", o, self.Description)
+	return fmt.Sprintf("%-30s\t%s\n", o, s.Description)
 }
 
-func (self *setting) Match(in string) (bool, bool) {
-	for _, o := range self.Options {
+func (s *setting) Match(in string) (bool, bool) {
+	for _, o := range s.Options {
 		if o == in {
 			return true, false
 		} else if o == in+":" {
@@ -100,10 +105,11 @@ func (self *setting) Match(in string) (bool, bool) {
 	return false, false
 }
 
+// Gonf exposes a simple interface and handles all configuration responsibilities
 type Gonf struct {
 	sync.RWMutex
-	Configuration  interface{}
-	Description    string
+	Configuration  interface{} // the object to merge and cast configuration onto
+	Description    string      // populate this if you want automatic help flags
 	configFile     string
 	configModified time.Time
 	examples       []string
@@ -111,14 +117,14 @@ type Gonf struct {
 	sighup         chan os.Signal
 }
 
-func (self *Gonf) merge(maps ...map[string]interface{}) map[string]interface{} {
+func (g *Gonf) merge(maps ...map[string]interface{}) map[string]interface{} {
 	m := make(map[string]interface{})
 	for _, t := range maps {
 		for k, v := range t {
 			if _, me := m[k]; me {
 				if m1, ok := m[k].(map[string]interface{}); ok {
 					if m2, is := v.(map[string]interface{}); is {
-						v = self.merge(m1, m2)
+						v = g.merge(m1, m2)
 					}
 				}
 			}
@@ -128,7 +134,7 @@ func (self *Gonf) merge(maps ...map[string]interface{}) map[string]interface{} {
 	return m
 }
 
-func (self *Gonf) isNumeric(t reflect.Kind) bool {
+func (g *Gonf) isNumeric(t reflect.Kind) bool {
 	switch t {
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64, reflect.Float32, reflect.Float64:
 		return true
@@ -136,7 +142,7 @@ func (self *Gonf) isNumeric(t reflect.Kind) bool {
 	return false
 }
 
-func (self *Gonf) cast(o interface{}, m map[string]interface{}, discard map[string]interface{}) {
+func (g *Gonf) cast(o interface{}, m map[string]interface{}, discard map[string]interface{}) {
 	d := reflect.ValueOf(o).Elem()
 	for i := 0; i < d.NumField(); i++ {
 		t := strings.Split(d.Type().Field(i).Tag.Get("json"), ",")[0]
@@ -152,11 +158,11 @@ func (self *Gonf) cast(o interface{}, m map[string]interface{}, discard map[stri
 				switch {
 				case in == reflect.String && tr == reflect.Bool:
 					m[k], _ = strconv.ParseBool(v.(string))
-				case in == reflect.String && self.isNumeric(tr):
+				case in == reflect.String && g.isNumeric(tr):
 					m[k], _ = strconv.ParseFloat(v.(string), 64)
 				case in == reflect.Map && tr == reflect.Struct:
 					if p, ok := v.(map[string]interface{}); ok {
-						self.cast(d.Field(i).Addr().Interface(), p, map[string]interface{}{})
+						g.cast(d.Field(i).Addr().Interface(), p, map[string]interface{}{})
 					}
 				}
 			}
@@ -166,29 +172,29 @@ func (self *Gonf) cast(o interface{}, m map[string]interface{}, discard map[stri
 		if t := strings.Split(d.Type().Field(i).Tag.Get("json"), ",")[0]; t != "" || d.Field(i).Kind() != reflect.Struct {
 			continue
 		}
-		self.cast(reflect.New(d.Field(i).Type()).Interface(), m, discard)
+		g.cast(reflect.New(d.Field(i).Type()).Interface(), m, discard)
 	}
 }
 
-func (self *Gonf) to(data ...map[string]interface{}) {
-	self.Lock()
-	defer self.Unlock()
-	combo := self.merge(data...)
-	if self.Configuration != nil {
-		if c, e := self.Configuration.(locker); e {
+func (g *Gonf) to(data ...map[string]interface{}) {
+	g.Lock()
+	defer g.Unlock()
+	combo := g.merge(data...)
+	if g.Configuration != nil {
+		if c, e := g.Configuration.(locker); e {
 			c.Lock()
 			defer c.Unlock()
 		}
-		self.cast(self.Configuration, combo, map[string]interface{}{})
+		g.cast(g.Configuration, combo, map[string]interface{}{})
 		final, _ := json.Marshal(combo)
-		json.Unmarshal(final, self.Configuration)
-		if c, e := self.Configuration.(logger); e {
-			c.Info("Configuration: %#v\n", self.Configuration)
+		json.Unmarshal(final, g.Configuration)
+		if c, e := g.Configuration.(logger); e {
+			c.Info("Configuration: %#v\n", g.Configuration)
 		}
 	}
 }
 
-func (self *Gonf) set(cursor map[string]interface{}, key string, value interface{}) {
+func (g *Gonf) set(cursor map[string]interface{}, key string, value interface{}) {
 	keys := strings.Split(key, ".")
 	for i, k := range keys {
 		if i+1 == len(keys) {
@@ -208,32 +214,32 @@ func (self *Gonf) set(cursor map[string]interface{}, key string, value interface
 	}
 }
 
-func (self *Gonf) parseEnvs() map[string]interface{} {
+func (g *Gonf) parseEnvs() map[string]interface{} {
 	vars := make(map[string]interface{})
-	for _, s := range self.settings {
+	for _, s := range g.settings {
 		if s.Env == "" {
 			continue
 		}
 		if v := os.Getenv(s.Env); len(v) > 0 {
-			self.set(vars, s.Name, v)
+			g.set(vars, s.Name, v)
 		}
 	}
 	return vars
 }
 
-func (self *Gonf) help(discontinue bool) {
-	self.RLock()
-	defer self.RUnlock()
-	print(stdout, "[%s]\nDescription:\n\t%s\n", appName, self.Description)
+func (g *Gonf) help(discontinue bool) {
+	g.RLock()
+	defer g.RUnlock()
+	print(stdout, "[%s]\nDescription:\n\t%s\n", appName, g.Description)
 	print(stdout, "\n\nFlags:\n\n")
 	print(stdout, "\t%s\n\t\t%s\n\n", "help, -h, --help", "display help information")
-	for _, o := range self.settings {
+	for _, o := range g.settings {
 		print(stdout, "\t%s\n\t\t%s\n\n", strings.Join(o.Options, ", "), o.Description)
 	}
-	if len(self.examples) > 0 {
+	if len(g.examples) > 0 {
 		print(stdout, "\n\nUsage:\n\n")
 	}
-	for _, e := range self.examples {
+	for _, e := range g.examples {
 		print(stdout, "\t%s %s\n", appName, e)
 	}
 	if discontinue {
@@ -241,154 +247,156 @@ func (self *Gonf) help(discontinue bool) {
 	}
 }
 
-func (self *Gonf) parseLong(i *int, m map[string]interface{}) {
-	var y, g bool
+func (g *Gonf) parseLong(i *int, m map[string]interface{}) {
+	var y, greedy bool
 	argv := strings.SplitN(os.Args[*i], "=", 2)
-	for _, s := range self.settings {
-		if y, g = s.Match(argv[0]); !y {
+	for _, s := range g.settings {
+		if y, greedy = s.Match(argv[0]); !y {
 			continue
 		}
 		switch {
-		case len(argv) == 1 && *i+1 < len(os.Args) && os.Args[*i+1] != "--" && (!strings.HasPrefix(os.Args[*i+1], "-") || g):
+		case len(argv) == 1 && *i+1 < len(os.Args) && os.Args[*i+1] != "--" && (!strings.HasPrefix(os.Args[*i+1], "-") || greedy):
 			*i++
-			self.set(m, s.Name, os.Args[*i])
+			g.set(m, s.Name, os.Args[*i])
 		case len(argv) == 2 && argv[1] != "":
-			self.set(m, s.Name, argv[1])
+			g.set(m, s.Name, argv[1])
 		default:
-			self.set(m, s.Name, true)
+			g.set(m, s.Name, true)
 		}
 	}
 }
 
-func (self *Gonf) parseShort(i *int, m map[string]interface{}) {
-	var y, g bool
+func (g *Gonf) parseShort(i *int, m map[string]interface{}) {
+	var y, greedy bool
 	a := strings.TrimPrefix(os.Args[*i], "-")
 	for ci, c := range a {
-		for _, s := range self.settings {
-			if y, g = s.Match("-" + string(c)); !y {
+		for _, s := range g.settings {
+			if y, greedy = s.Match("-" + string(c)); !y {
 				continue
 			}
 			switch {
-			case ci+1 >= len(a) && *i+1 < len(os.Args) && os.Args[*i+1] != "--" && (!strings.HasPrefix(os.Args[*i+1], "-") || g):
+			case ci+1 >= len(a) && *i+1 < len(os.Args) && os.Args[*i+1] != "--" && (!strings.HasPrefix(os.Args[*i+1], "-") || greedy):
 				*i++
-				self.set(m, s.Name, os.Args[*i])
-			case ci+1 < len(a) && g:
-				self.set(m, s.Name, a[ci+1:])
+				g.set(m, s.Name, os.Args[*i])
+			case ci+1 < len(a) && greedy:
+				g.set(m, s.Name, a[ci+1:])
 				return
 			default:
-				self.set(m, s.Name, true)
+				g.set(m, s.Name, true)
 			}
 		}
 	}
 }
 
-func (self *Gonf) parseOptions() map[string]interface{} {
+func (g *Gonf) parseOptions() map[string]interface{} {
 	vars := map[string]interface{}{}
 	for i := 0; i < len(os.Args); i++ {
 		if arg := os.Args[i]; arg == "--" {
 			break
-		} else if len(self.Description) > 0 && (arg == "help" || arg == "-h" || arg == "--help") {
-			self.help(true)
+		} else if len(g.Description) > 0 && (arg == "help" || arg == "-h" || arg == "--help") {
+			g.help(true)
 			return nil
 		} else if len(arg) == 1 || !strings.HasPrefix(arg, "-") {
 			continue
 		}
 
 		if arg := os.Args[i]; strings.HasPrefix(arg, "--") {
-			self.parseLong(&i, vars)
+			g.parseLong(&i, vars)
 		} else {
-			self.parseShort(&i, vars)
+			g.parseShort(&i, vars)
 		}
 	}
 	return vars
 }
 
-func (self *Gonf) comment(data []byte) []byte {
+func (g *Gonf) comment(data []byte) []byte {
 	re := regexp.MustCompile(`(?:/\*[^*]*\*+(?:[^/*][^*]*\*+)*/|//[^\n]*(?:\n|$)|#[^\n]*(?:\n|$))|("[^"\\]*(?:\\[\S\s][^"\\]*)*"|'[^'\\]*(?:\\[\S\s][^'\\]*)*'|[\S\s][^/"'\\]*)`)
 	return re.ReplaceAll(data, []byte("$1"))
 }
 
-func (self *Gonf) readfile() (map[string]interface{}, error) {
+func (g *Gonf) readfile() (map[string]interface{}, error) {
 	vars := make(map[string]interface{})
-	self.Lock()
-	defer self.Unlock()
+	g.Lock()
+	defer g.Unlock()
 
-	modTime := self.configModified
-	if fi, err := stat(self.configFile); err == nil {
-		if modTime = fi.ModTime(); modTime == self.configModified {
+	modTime := g.configModified
+	if fi, err := stat(g.configFile); err == nil {
+		if modTime = fi.ModTime(); modTime == g.configModified {
 			return vars, nil
 		}
 	}
 
-	data, err := readfile(self.configFile)
+	data, err := readfile(g.configFile)
 	if err != nil {
 		return vars, err
 	}
 
-	if err := json.Unmarshal(self.comment(data), &vars); err != nil {
-		if c, ok := self.Configuration.(logger); ok {
-			c.Debug("failed to parse %s (%s)", self.configFile, err)
+	if err := json.Unmarshal(g.comment(data), &vars); err != nil {
+		if c, ok := g.Configuration.(logger); ok {
+			c.Debug("failed to parse %s (%s)", g.configFile, err)
 		}
 		return vars, err
 	}
 
-	self.configModified = modTime
+	g.configModified = modTime
 	return vars, nil
 }
 
-func (self *Gonf) parseFiles(filenames ...string) map[string]interface{} {
+func (g *Gonf) parseFiles(filenames ...string) map[string]interface{} {
 	vars := make(map[string]interface{})
 
-	if self.ConfigFile() != "" {
-		vars, _ := self.readfile()
+	if g.ConfigFile() != "" {
+		vars, _ := g.readfile()
 		return vars
 	}
 
 	for _, p := range paths {
 		for _, f := range filenames {
-			self.Lock()
-			self.configFile = filepath.Join(p, f)
-			self.Unlock()
-			if vars, err := self.readfile(); err == nil {
+			g.Lock()
+			g.configFile = filepath.Join(p, f)
+			g.Unlock()
+			if vars, err := g.readfile(); err == nil {
 				return vars
 			}
 		}
 	}
 
-	self.Lock()
-	self.configFile = filepath.Join(paths[len(paths)-1], filenames[0])
-	self.Unlock()
-	self.Save()
+	g.Lock()
+	g.configFile = filepath.Join(paths[len(paths)-1], filenames[0])
+	g.Unlock()
+	g.Save()
 	return vars
 }
 
-func (self *Gonf) signal() {
-	for _ = range self.sighup {
-		self.Reload()
+func (g *Gonf) signal() {
+	for _ = range g.sighup {
+		g.Reload()
 	}
 }
 
-func (self *Gonf) Reload() {
-	if v, err := self.readfile(); err == nil && len(v) > 0 {
-		self.to(v)
-		if c, e := self.Configuration.(callbacker); e {
+// reload the configuration file ontop of the existing configuration
+func (g *Gonf) Reload() {
+	if v, err := g.readfile(); err == nil && len(v) > 0 {
+		g.to(v)
+		if c, e := g.Configuration.(callbacker); e {
 			c.Callback()
 		}
 	}
 }
 
-func (self *Gonf) Save() {
-	self.RLock()
-	defer self.RUnlock()
-	if self.configFile == "" {
+// save the current configuration state back into the loaded file
+func (g *Gonf) Save() {
+	g.RLock()
+	defer g.RUnlock()
+	if g.configFile == "" {
 		return
 	}
 
-	mkdirall(filepath.Dir(self.configFile), 0775)
-	f, err := create(self.configFile)
+	mkdirall(filepath.Dir(g.configFile), 0775)
+	f, err := create(g.configFile)
 	if err != nil {
-		if c, ok := self.Configuration.(logger); ok {
-			c.Debug("failed to save %s (%s)", self.configFile, err)
+		if c, ok := g.Configuration.(logger); ok {
+			c.Debug("failed to save %s (%s)", g.configFile, err)
 		}
 		return
 	}
@@ -396,56 +404,61 @@ func (self *Gonf) Save() {
 
 	enc := json.NewEncoder(f)
 	enc.SetIndent("", "\t")
-	enc.Encode(self.Configuration)
+	enc.Encode(g.Configuration)
 }
 
-func (self *Gonf) Load(filenames ...string) {
+// load configuration, with optional filenames to look for before using OS-specific standard paths
+func (g *Gonf) Load(filenames ...string) {
 	for i := len(filenames) - 1; i >= 0; i-- {
 		if filenames[i] == "" {
 			filenames = append(filenames[:i], filenames[i+1:]...)
 		}
 	}
 
-	self.to(self.parseFiles(append(filenames, appName+".json")...), self.parseEnvs(), self.parseOptions())
-	if c, e := self.Configuration.(callbacker); e {
+	g.to(g.parseFiles(append(filenames, appName+".json")...), g.parseEnvs(), g.parseOptions())
+	if c, e := g.Configuration.(callbacker); e {
 		c.Callback()
 	}
 
-	self.Lock()
-	defer self.Unlock()
-	if goos != "windows" && self.sighup == nil {
-		self.sighup = make(chan os.Signal)
-		go self.signal()
-		signal.Notify(self.sighup, syscall.SIGHUP)
+	g.Lock()
+	defer g.Unlock()
+	if goos != "windows" && g.sighup == nil {
+		g.sighup = make(chan os.Signal)
+		go g.signal()
+		signal.Notify(g.sighup, syscall.SIGHUP)
 	}
 }
 
-func (self *Gonf) Add(name, description, env string, options ...string) {
+// add a new configuration option
+func (g *Gonf) Add(name, description, env string, options ...string) {
 	if name == "" || (env == "" && len(options) == 0) {
 		return
 	}
-	self.Lock()
-	self.settings = append(self.settings, setting{
+	g.Lock()
+	g.settings = append(g.settings, setting{
 		Name:        name,
 		Description: description,
 		Env:         env,
 		Options:     options,
 	})
-	self.Unlock()
+	g.Unlock()
 }
 
-func (self *Gonf) Example(example string) {
-	self.Lock()
-	self.examples = append(self.examples, example)
-	self.Unlock()
+// provide examples of cli flags (minus the tool name)
+func (g *Gonf) Example(example string) {
+	g.Lock()
+	g.examples = append(g.examples, example)
+	g.Unlock()
 }
 
-func (self *Gonf) Help() {
-	self.help(false)
+// print automated help manually without exiting
+func (g *Gonf) Help() {
+	g.help(false)
 }
 
-func (self *Gonf) ConfigFile() string {
-	self.RLock()
-	defer self.RUnlock()
-	return self.configFile
+// returns the file Gonf is using
+func (g *Gonf) ConfigFile() string {
+	g.RLock()
+	defer g.RUnlock()
+	return g.configFile
 }

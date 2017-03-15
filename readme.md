@@ -6,7 +6,7 @@ An idiomatic go utility for standardizing and consolidating application configur
 
 ## sales pitch
 
-This library consolidates three forms of configuration (_file, cli options, and environment variables_) into a single tidy package with minimal exposed functions, exactly 450 lines of code, and zero transitive dependencies.
+This library consolidates three forms of configuration (_file, cli options, and environment variables_) into a single tidy package with minimal exposed functions, under 500 lines of code, and zero transitive dependencies.
 
 It comes with a complete suite of unit tests, as well as instructions further down in this document.
 
