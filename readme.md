@@ -1,101 +1,126 @@
 
-# [gonf](https://github.com/cdelorme/gonf#)
+# [gonf](https://github.com/cdelorme/gonf)
 
-An idiomatic go utility for standardizing and consolidating application configuration based on experiences using independent utilities for each type of configuration.
+An idiomatic go package for standardizing and consolidating application configuration in the form of json file, command line, and environment variables.
+
+It was designed around consistent use of built-in and single-purpose packages to reduce configuration verbosity.
 
 
 ## sales pitch
 
-This library consolidates three forms of configuration (_file, cli options, and environment variables_) into a single tidy package with minimal exposed functions, under 500 lines of code, and zero transitive dependencies.
+While written with the same usual goals of at-a-glance comprehension, the main focus is simplicity of implementation with no external dependencies.
 
-It comes with a complete suite of unit tests, as well as instructions further down in this document.
+**This library:**
 
-**For a more comprehensive set of features you should checkout checkout [viper](https://github.com/spf13/viper).**  It's got nearly every bell and whistle, _including the risks of transitive dependencies._
+- has zero transitive dependencies
+- enables configuration consistency
+- all operations are concurrently safe
+- features sighup on supporting platforms
+- comes with a feature-complete suite of unit tests
+- provides POSIX compliant `getopt` command line options
+- provides optional logging through the configuration target
+- provides optional mutex locking through the configuration target
+- enlists sane-defaults for configuration paths by operating system
+- remains under 500 lines of code (_under 1200 if you count comments and tests_)
+
+**For a more comprehensive set of features you should checkout checkout [viper](https://github.com/spf13/viper).**  It's got nearly every bell and whistle, _including the complexity and transitive dependencies._
 
 
 ## design
 
-Over the course of two years I found that I was always implementing the same configuration approach using my three libraries in all of my applications, and realized that by combining them into a single import I could greatly reduce the verbosity and complexity.
+An idiomatic structure, with a minimal set of exposed properties and functions to keep things simple for developers.
 
-I also began to recognize configuration anti-patterns that I ran into, and took those into account when designing this solution after concluding that simplicity is generally best.
+A pointer to a structure is expected as the `Target`.
 
-The result is a highly intuitive and much cleaner solution, which resolves type casting concerns, and exists as a single import with no transitive dependencies.
+If a `Description` is set, it implies automated help options and message generation using the registered settings and examples.
+
+The file format used is json, and the `Target` may use json tags for its properties.
+
+A [fully POSIX compliant `getopt` implementation](https://en.wikipedia.org/wiki/Getopt) is supplied, with support for an explicit capture character (`:`) to always capture the content after the option while safely dealing with whitespace.
+
+A single function to register new properties by name or by json tag, which may have a description, environment variable, and many flags.  If no environment variable value or flags are supplied, it will fail and return without modifying anything.  Support for deep properties is provided using dot-notation (eg. `parent.child`).
+
+A function to display the automatically generated help message on demand, but without terminating the application.
+
+A function to register examples used when generating the help message.
+
+Since all input from command line and environment variables are strings by default, this tool leverages reflection against the `Target` to cast to the common json data types.
+
+A single function to execute the entire parsing and file loading process, as well as to register a `sighup` listener on compatible platforms so that the system can reload configuration from its file without needing to be completely restarted.
+
+A function to manually reload, makes it trivial to add polling or on-demand reload behaviors, which is the same operation a `sighup` triggers.
+
+The package abstracts the configuration file paths so that it can enforce common standards.  While you can override the file name, the path chosen is either relative to the application, or specific to each operating system.
+
+While the json specification does not support comments, the system will safely filter comments using the `//` and `/**/` formats from the configuration file prior to parsing it.
+
+If no file exists, one will be created by combining the OS-specific path with the first filename (eg. the default, or the first name supplied to `Load()`).
+
+If the `Target` offers functions for logging, mutex, or a Callback, they will be executed according to the situation.  Prior to unmarshalling changes, the mutex locking will be used.  Logging will be used when errors are encountered, as well as after the configuration has been applied.  Finally, it will run `Callback()` once finished, allowing for any post-processing to be run.
 
 
-### implementation
+**Reasons:**
 
-At a fundamental level, this application consolidates three methods of configuration input:
+There are completely logical reasons for all of these implementation details, and I figured it would help to explain them here.
 
-- cli options
-- environment variables
-- file
+The birth of this package stems from four separate projects I had previously used in many others to handle the three configuration methods.  The fourth package was necessary to combine the data for use.  I learned over the course of a couple years that I never relied on direct properties and always ended up using structures, and by combining them I could both simplify the implementation as well as the verbosity.
 
-Configuration is prioritized in that order by standards; meaning cli options are used over environment variables, and environment variables supersede file based configuration.
+Selecting json as the file storage type was mostly to simplify the data types to sanely deal with casting from environment variables and command line options.  The fact that a json package is built in was just an added bonus.
 
-Being cross-platform friendly it checks `%APPDATA%` for windows, checks for darwin/osx to use `~/Library/Preferences/`, and finally looks for `$HOME` and `$XDG_CONFIG_HOME` with a fallback to `$HOME/.config/`).  _If none of those are matched, it uses the path relative to the application._
+I chose not to use the built in `flag` library because it does not provide a POSIX compatible getopt implementation, _which can turn command line into a verbose mess._
 
-A [fully posix compliant `getopt` implementation](https://en.wikipedia.org/wiki/Getopt) is supplied, with support for an explicit capture character (`:`) to always capture the content after the flag while safely dealing with whitespace.
+I ran into a few projects that would have benefited from the capacity to easily reload configuration without completely restarting.  This called for concurrency safe behavior, _but was not really possible on Windows so I provided a `Reload()` function._
 
-Intelligent automatically generated help messages are provided, depending on whether `Description` has been set on the `Config` instance.  This allows an intuitive activation and will capture `-h`, `--help`, and simply `help`, to display generated help, followed by running `os.Exit(0)`.  _You can print this help at runtime without exiting the application by calling `Help()`._
+It would be relatively trivial to create a polling mechanism, which will only read the file when the modified time has changed, which is why I have not included it as part of the package:
 
-All environment variables and cli options are loaded as strings, so we've added the `reflect` package to help identify the configuration object and cast the fields to the correct types before merging the final map with your structure.  _This is a trivial fix as json only supports three main data types and we only need to concern ourselves with casting from `string`._  We silently discard failed casts in-line with the `json.Unmarshal` behavior.
+	go func(c) {
+		for {
+			time.Sleep(1 * time.Minute)
+			c.Reload()
+		}
+	}()
 
-The source activates sighup by default on non-windows platforms.  _Users can disable registered signals with `os/signal.Reset()`.  Between complexity and race conditions it was decided to omit polling._  For users who want to implement file-watch, polling, or other custom behaviors `Gonf` now exposes `Reload()` and `ConfigFile()`.
+For a cross-platform friendly approach to dealing with configuration files the tool checks `%APPDATA%` for windows, `$HOME/Library/Preferences/` for darwin/osx, with a linux fallback of `$HOME`, `$XDG_CONFIG_HOME` or `$HOME/.config/`.  _Support for path overrides may be added in the future, but I have yet to encounter a particular need that wasn't for a specific platform (eg. linux or unix using `/etc/` traditionally for services)._
 
-When a file has successfully been loaded it is automatically run through a filter that eliminates single and multi-line comments in `//` and `/**/` formats, and correctly skips starting sequences inside quotes.
+Support for comments was a whim, and was only added because I thought it might help to allow configuration files to include comments (like most ini style configuration files).  _If there was a built-in `encoding/ini` I would probably have chosen it, but object mapping would not have easily been mapped._  However, I would never have picked yaml, since it's syntax is too white-space sensitive for human modification.
+
+Creating a file on first run is a way of having an application self-document for users by printing its sane defaults in a predictable place so that a user knows what settings are available.  _Obviously if you depend on defaults by type and use `omitempty`, this will be of little benefit._
+
+While the term `Callback` may carry a negative connotation from javascript, the intended function is to allow your application to respond to reload events that may occur asynchronously.  Things like post-processing of the configuration values, invalidating cache, and loading in the new settings to restart or transition execution.
 
 
 ## usage
 
-Import the library:
+Here is an example of using this package:
+
+	package main
 
 	import "github.com/cdelorme/gonf"
 
-Define a configuration structure, _optionally with a `GoString()` function for safe printing_:
+	type Application struct {
+		Path string
+		Skip bool
+		HowMany int `json:"number,omitempty"`
+	}
 
-	type MyConf struct { Name string }
-	func (self MyConf) GoString() string { return "custom format" }
+	func main() {
+		app := &Application{Path: "/tmp/default"}
 
-Create an instance of `Gonf` and your configuration structure, adding it by reference:
+		c := gonf.Config{Target: app, Description: "An example application"}
+		c.Add("Path", "Path to run operations in", "APP_PATH", "-p", "--path")
+		c.Add("Skip", "a skippable boolean (false is default)", "APP_SKIP", "-s", "--skip")
+		c.Add("number", "number of cycles", "APP_NUMBER", "-n", "--number")
+		c.Example("-p ~/ -sn 3")
+		c.Example("--path=~/ --number=3")
+		c.Load()
 
-	c := &MyConf{Name: "Default"}
-	g := gonf.Gonf{Description: "I want help automated", Configuration: c}
-
-_Setting a `Description` will enable built-in `help` support (capturing `help`, `--help` and `-h` by default and terminating the application)._  To supplement the help message you can add examples which will automatically prefix with the executable name:
-
-	g.Example("-o /path/to/output")
-
-To deal with misconfiguration at a later time you can choose to call `Help()` directly to print usage information without automatically closing the application.
-
-Next you can register all settings like this:
-
-	g.Add("Name", "What's in a name?", "NAME_ENV_VAR", "-n", "--name")
-	g.Add("deep.prop", "period delimited depth support", "DEEP_PROP", "-d", "--deep-prop")
-
-_This combines both environment variable and cli option registration into a single call, associating both with the same description and property name._  You may choose to omit cli options or use an empty string for the environment variable.
-
-The configuration supports composition; you can use period delimited keys to set depth.
-
-**The application will not stop you from registering the same keys multiple times.**
-
-You can use the default application name for the configuration file, _or you can supply an override including a path:_
-
-	g.Load("midifed-path/custom-filename.extension")
-
-After execution, all settings will have been merged into your original configuration structure.
-
-If you wish you can trigger a reload which will pull changes from a modified configuration file, and run the configuration callback:
-
-	g.Reload()
-
-_If you want to know the file used to store the configuration, you can get it with `g.ConfigFile()`._
-
-This solution provides dynamic support for `Debug`, and `Info` logging with expected signatures, as well as `Lock` and `Unlock` for mutex/concurrency support, and finally will run `Callback()` if available.  _The `Gonf` structure itself is concurrency safe, which means it can be manipulated at runtime without risk of race conditions and subsequent panics._
+		// run your applications operations
+	}
 
 
 ## tests
 
-This software comes with a complete suite of isolated unit tests and full coverage that can be validated with:
+This software is fully tested, and tests can be run and checked with:
 
 	go test -v -race -coverprofile=coverage.out
 	go tool cover -html=coverage.out

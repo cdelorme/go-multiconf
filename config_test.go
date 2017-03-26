@@ -3,10 +3,9 @@ package gonf
 import (
 	"errors"
 	"fmt"
-	"io"
+	// "io"
 	"io/ioutil"
 	"os"
-	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -82,100 +81,8 @@ var (
 	mockStatError error
 )
 
-func init() {
-	stdout = ioutil.Discard
-	exit = func(c int) { code = c }
-	readfile = func(name string) ([]byte, error) { return []byte(filedata), fileerror }
-	create = func(_ string) (*os.File, error) { return nil, createerror }
-	stat = func(_ string) (os.FileInfo, error) { return mockFileStat, mockStatError }
-	mkdirall = func(_ string, _ os.FileMode) error { return nil }
-	print = func(_ io.Writer, _ string, _ ...interface{}) (int, error) { return 0, nil }
-}
-
-func TestPlacebo(t *testing.T) {
-	t.Parallel()
-	if !true {
-		t.FailNow()
-	}
-}
-
-func TestInitLoad(t *testing.T) {
-	os.Clearenv()
-
-	load()
-	if len(paths) != 1 {
-		t.FailNow()
-	}
-
-	os.Setenv("HOME", "/tmp")
-	load()
-	if len(paths) != 2 {
-		t.FailNow()
-	}
-
-	os.Setenv("XDG_CONFIG_HOME", "/tmp/xdg")
-	load()
-	if len(paths) != 2 {
-		t.FailNow()
-	}
-
-	goos = "darwin"
-	load()
-	if len(paths) != 2 {
-		t.FailNow()
-	}
-
-	os.Setenv("APPDATA", "testappdata")
-	load()
-	if len(paths) != 2 {
-		t.FailNow()
-	}
-}
-
-func TestSettingString(t *testing.T) {
-	t.Parallel()
-
-	o := setting{
-		Name:        "Name",
-		Description: "Description",
-		Env:         "Env",
-		Options:     []string{"-a:", "-b"},
-	}
-
-	if s := o.String(); s == "" || strings.Contains(s, ":") {
-		t.FailNow()
-	}
-}
-
-func TestSettingMatch(t *testing.T) {
-	t.Parallel()
-
-	o := setting{
-		Name:        "Name",
-		Description: "Description",
-		Env:         "Env",
-		Options:     []string{"-a:", "-b"},
-	}
-
-	// this should not be found
-	if f, g := o.Match("-f"); f || g {
-		t.FailNow()
-	}
-
-	// this should be found, but is not greedy
-	if f, g := o.Match("-b"); !f || g {
-		t.FailNow()
-	}
-
-	// this should be found and is greedy
-	if f, g := o.Match("-a"); !f || !g {
-		t.FailNow()
-	}
-}
-
-func TestGonfMerge(t *testing.T) {
-	t.Parallel()
-	o := &Gonf{}
+func TestConfigMerge(t *testing.T) {
+	o := &Config{}
 
 	// maps to test merging and depth
 	m1 := map[string]interface{}{"key": "value", "b": true, "deep": map[string]interface{}{"copy": "me"}, "fail": map[string]interface{}{"no": false}}
@@ -191,9 +98,8 @@ func TestGonfMerge(t *testing.T) {
 	}
 }
 
-func TestGonfCast(t *testing.T) {
-	t.Parallel()
-	g := &Gonf{Configuration: &mockConfig{}}
+func TestConfigCast(t *testing.T) {
+	g := &Config{Target: &mockConfig{}}
 
 	// prepare map matching config struct to verify types after
 	m := map[string]interface{}{
@@ -204,7 +110,7 @@ func TestGonfCast(t *testing.T) {
 		"named":    map[string]interface{}{"data": "42"},
 	}
 
-	g.cast(g.Configuration, m, map[string]interface{}{})
+	g.cast(g.Target, m, map[string]interface{}{})
 	if d, e := m["number"].(float64); !e || d != 15.9 {
 		t.FailNow()
 	} else if d, e := m["boolean"].(bool); !e || !d {
@@ -222,10 +128,9 @@ func TestGonfCast(t *testing.T) {
 	}
 }
 
-func TestGonfTo(t *testing.T) {
-	t.Parallel()
+func TestConfigTo(t *testing.T) {
 	c := &mockConfig{}
-	o := &Gonf{Configuration: c}
+	o := &Config{Target: c}
 
 	// map with edge cases to validate expected behavior
 	m := map[string]interface{}{
@@ -250,9 +155,8 @@ func TestGonfTo(t *testing.T) {
 	}
 }
 
-func TestGonfSet(t *testing.T) {
-	t.Parallel()
-	o := &Gonf{}
+func TestConfigSet(t *testing.T) {
+	o := &Config{}
 	m := map[string]interface{}{"x": false}
 
 	// test single key/value
@@ -286,10 +190,10 @@ func TestGonfSet(t *testing.T) {
 	}
 }
 
-func TestGonfParseEnvs(t *testing.T) {
+func TestConfigParseEnvs(t *testing.T) {
 	os.Clearenv()
 	os.Args = []string{}
-	o := &Gonf{}
+	o := &Config{}
 
 	// register multiple settings
 	o.Add("test", "", "MULTICONF_TEST_ENVVAR")
@@ -314,28 +218,42 @@ func TestGonfParseEnvs(t *testing.T) {
 	}
 }
 
-func TestGonfPrivateHelp(t *testing.T) {
-	t.Parallel()
-	o := &Gonf{}
-	o.Add("test", "test help cli flag", "", "-t")
-	o.Example("test help example")
-	code = 1
+func TestConfigPrivateHelp(t *testing.T) {
+	exit = func(c int) { code = c }
+	fmtPrintf = func(f string, a ...interface{}) (int, error) { return fmt.Fprintf(ioutil.Discard, f, a...) }
 
-	// test with exit
+	o := &Config{}
+	o.Add("cli", "test help cli flag", "", "-c", "--cli")
+	o.Add("env", "test help env", "env")
+	o.Add("both", "test help env and cli", "both", "-b", "--both")
+	o.Example("test help example")
+
+	// test without description
+	code = 1
+	o.help(true)
+	if code != 1 {
+		t.FailNow()
+	}
+
+	// test with description
+	o.Description = "testing help"
+	code = 1
 	o.help(true)
 	if code != 0 {
 		t.FailNow()
 	}
 }
 
-func TestGonfParseLong(t *testing.T) {
-	g := &Gonf{}
+func TestConfigParseLong(t *testing.T) {
+	g := &Config{}
 
 	// register all combinations of flags
 	g.Add("first", "", "", "--first")
 	g.Add("greedy", "", "", "--greedy:")
 	g.Add("second", "", "", "--second")
 	g.Add("test.depth", "", "", "--depth")
+	g.Add("bad.depth.", "", "", "--bad")
+	g.Add("also..bad", "", "", "--also")
 	g.Add("test.depth.deeper", "", "", "--deeper")
 
 	var m map[string]interface{}
@@ -355,7 +273,7 @@ func TestGonfParseLong(t *testing.T) {
 	}
 
 	// test depth support
-	os.Args = []string{"--depth", "--deeper"}
+	os.Args = []string{"--depth", "--deeper", "--bad", "--also"}
 	m = g.parseOptions()
 	if _, ok := m["test"]; !ok {
 		t.FailNow()
@@ -369,8 +287,8 @@ func TestGonfParseLong(t *testing.T) {
 	}
 }
 
-func TestGonfParseShort(t *testing.T) {
-	g := &Gonf{}
+func TestConfigParseShort(t *testing.T) {
+	g := &Config{}
 	g.Add("first", "", "", "-f")
 	g.Add("greedy", "", "", "-g:")
 	g.Add("second", "", "", "-2")
@@ -428,15 +346,16 @@ func TestGonfParseShort(t *testing.T) {
 	}
 }
 
-func TestGonfParseOptions(t *testing.T) {
+func TestConfigParseOptions(t *testing.T) {
+	fmtPrintf = func(f string, a ...interface{}) (int, error) { return fmt.Fprintf(ioutil.Discard, f, a...) }
 	os.Clearenv()
 
-	g := &Gonf{Description: "testing parse options"}
+	g := &Config{Description: "testing parse options"}
 	g.Add("key", "test", "", "-k", "--key")
 	var m map[string]interface{}
 
-	// test bypass
-	os.Args = []string{"--"}
+	// test bad-single-skip and bypass
+	os.Args = []string{"-", "--"}
 	m = g.parseOptions()
 	if len(m) != 0 {
 		t.FailNow()
@@ -445,19 +364,19 @@ func TestGonfParseOptions(t *testing.T) {
 	// test help in all three standard forms
 	code, os.Args = 1, []string{"help"}
 	m = g.parseOptions()
-	if m != nil || code != 0 {
+	if code != 0 {
 		t.FailNow()
 	}
 
 	code, os.Args = 1, []string{"-h"}
 	m = g.parseOptions()
-	if m != nil || code != 0 {
+	if code != 0 {
 		t.FailNow()
 	}
 
 	code, os.Args = 1, []string{"--help"}
 	m = g.parseOptions()
-	if m != nil || code != 0 {
+	if code != 0 {
 		t.FailNow()
 	}
 
@@ -483,26 +402,26 @@ func TestGonfParseOptions(t *testing.T) {
 	}
 }
 
-func TestGonfComment(t *testing.T) {
-	g := Gonf{}
+func TestConfigComment(t *testing.T) {
+	g := Config{}
 
 	before := []byte(`{
-	// remove this
-	//remove this
-	"key": " // keep this" // remove this
-	/ / keep bad syntax
+		// remove this
+		//remove this
+		"key": " // keep this" // remove this
+		/ / keep bad syntax
 /*
-	"removed": "this is removed"
-	*/
-	"keep": " /* this is to be kept*/"
-	/*"termination": "can happen inside quotes*/"
-}`)
+		"removed": "this is removed"
+		*/
+		"keep": " /* this is to be kept*/"
+		/*"termination": "can happen inside quotes*/"
+	}`)
 	after := []byte(`{
-			"key": " // keep this" 	/ / keep bad syntax
+						"key": " // keep this" 		/ / keep bad syntax
 
-	"keep": " /* this is to be kept*/"
-	"
-}`)
+		"keep": " /* this is to be kept*/"
+		"
+	}`)
 
 	// verify that we strip single and multi-line comments outside quotes
 	if o := g.comment(before); string(o) != string(after) {
@@ -510,19 +429,21 @@ func TestGonfComment(t *testing.T) {
 	}
 }
 
-func TestGonfReadfile(t *testing.T) {
-	o := &Gonf{Configuration: &mockConfig{}}
+func TestConfigReadfile(t *testing.T) {
+	stat = func(_ string) (os.FileInfo, error) { return mockFileStat, mockStatError }
+	readfile = func(name string) ([]byte, error) { return []byte(filedata), fileerror }
+	o := &Config{Target: &mockConfig{}}
 
 	// test successful return
 	filedata = `{
-		"key": 123,
-		"name": "casey",
-		"extra": {
-			"data": 123,
-			"correct": true
-		},
-		"Final": true
-	}`
+			"key": 123,
+			"name": "casey",
+			"extra": {
+				"data": 123,
+				"correct": true
+			},
+			"Final": true
+		}`
 	if v, e := o.readfile(); e != nil || len(v) == 0 {
 		t.FailNow()
 	}
@@ -548,8 +469,10 @@ func TestGonfReadfile(t *testing.T) {
 	}
 }
 
-func TestGonfParseFiles(t *testing.T) {
-	o := &Gonf{Configuration: &mockConfig{}}
+func TestConfigParseFiles(t *testing.T) {
+	stat = func(_ string) (os.FileInfo, error) { return mockFileStat, mockStatError }
+	readfile = func(name string) ([]byte, error) { return []byte(filedata), fileerror }
+	o := &Config{Target: &mockConfig{}}
 	paths = []string{"/tmp/nope"}
 
 	// test no files (empty data)
@@ -561,14 +484,14 @@ func TestGonfParseFiles(t *testing.T) {
 	// test file match /w valid filedata
 	fileerror = nil
 	filedata = `{
-		"key": 123,
-		"name": "casey",
-		"extra": {
-			"data": 123,
-			"correct": true
-		},
-		"Final": true
-	}`
+			"key": 123,
+			"name": "casey",
+			"extra": {
+				"data": 123,
+				"correct": true
+			},
+			"Final": true
+		}`
 	o.configFile = ""
 	if v := o.parseFiles(appName); len(v) == 0 {
 		t.FailNow()
@@ -581,13 +504,23 @@ func TestGonfParseFiles(t *testing.T) {
 	}
 }
 
-func TestGonfPublicReload(_ *testing.T) {
-	g := &Gonf{Configuration: &mockConfig{}}
+func TestConfigPublicReload(_ *testing.T) {
+	stat = func(_ string) (os.FileInfo, error) { return mockFileStat, mockStatError }
+	readfile = func(name string) ([]byte, error) { return []byte(filedata), fileerror }
+	g := &Config{Target: &mockConfig{}}
+
+	// without config file
+	g.Reload()
+
+	// with config file
+	g.configFile = "/tmp/test.gonf.json"
 	g.Reload()
 }
 
-func TestGonfPublicSave(_ *testing.T) {
-	g := &Gonf{Configuration: &mockConfig{}}
+func TestConfigPublicSave(_ *testing.T) {
+	mkdirall = func(_ string, _ os.FileMode) error { return nil }
+	create = func(_ string) (*os.File, error) { return nil, createerror }
+	g := &Config{Target: &mockConfig{}}
 
 	// test empty configuration file
 	g.Save()
@@ -601,10 +534,17 @@ func TestGonfPublicSave(_ *testing.T) {
 	g.Save()
 }
 
-func TestGonfPublicLoad(t *testing.T) {
+func TestConfigPublicLoad(t *testing.T) {
+	exit = func(c int) { code = c }
+	fmtPrintf = func(f string, a ...interface{}) (int, error) { return fmt.Fprintf(ioutil.Discard, f, a...) }
+	stat = func(_ string) (os.FileInfo, error) { return mockFileStat, mockStatError }
+	readfile = func(name string) ([]byte, error) { return []byte(filedata), fileerror }
+	mkdirall = func(_ string, _ os.FileMode) error { return nil }
+	create = func(_ string) (*os.File, error) { return nil, createerror }
 	goos = "linux"
+
 	c := &mockConfig{Name: "casey"}
-	g := &Gonf{Configuration: c}
+	g := &Config{Target: c}
 	g.Add("name", "test-overrides-from-public-load", "TEST_NAME", "-a:")
 
 	// clear all inputs
@@ -643,10 +583,8 @@ func TestGonfPublicLoad(t *testing.T) {
 	}
 }
 
-func TestGonfPublicAdd(t *testing.T) {
-	t.Parallel()
-
-	o := &Gonf{}
+func TestConfigPublicAdd(t *testing.T) {
+	o := &Config{}
 
 	// none of these should get added
 	o.Add("", "", "")
@@ -665,20 +603,18 @@ func TestGonfPublicAdd(t *testing.T) {
 	}
 }
 
-func TestGonfPublicExample(t *testing.T) {
-	t.Parallel()
-	o := &Gonf{}
+func TestConfigPublicExample(_ *testing.T) {
+	o := &Config{}
 	o.Example("Whatever")
 }
 
-func TestGonfPublicHelp(t *testing.T) {
-	t.Parallel()
-	o := &Gonf{}
+func TestConfigPublicHelp(_ *testing.T) {
+	o := &Config{}
 	o.Help()
 }
 
-func TestGonfConfigFile(t *testing.T) {
-	g := Gonf{configFile: "test.txt"}
+func TestConfigConfigFile(t *testing.T) {
+	g := Config{configFile: "test.txt"}
 	if g.ConfigFile() != g.configFile {
 		t.FailNow()
 	}
