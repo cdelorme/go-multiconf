@@ -2,35 +2,28 @@ package gonf
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
-type locker interface {
-	Lock()
-	Unlock()
-}
-
-type logger interface {
-	Info(string, ...interface{})
-	Debug(string, ...interface{})
-}
-
-type callbacker interface {
-	Callback()
-}
-
 var (
+	errNilTarget      = errors.New("no configuration target supplied...")
+	errEmptyConfig    = errors.New("no configuration file...")
+	errNoChanges      = errors.New("the configuration file has not changed...")
+	errEmptyName      = errors.New("name cannot be empty...")
+	errNoEnvOptions   = errors.New("environment variable must not be empty or at least one command line option is expected...")
+	errBadNameSyntax  = errors.New("bad syntax for child properties...")
+	errConflictingAdd = errors.New("duplicate option detected...")
+
 	fmtPrintf = fmt.Printf
 	readfile  = ioutil.ReadFile
 	mkdirall  = os.MkdirAll
@@ -39,18 +32,83 @@ var (
 	exit      = os.Exit
 )
 
-// A simple interface for configuration, which expects a Target structure to
-// apply registered settings against, and a description to enable automatically
-// generated help flags and output.
+type locker interface {
+	Lock()
+	Unlock()
+}
+
+// A simple interface for configuration, which expects a Target pointer to a
+// structure which it can apply registered settings against, and a description
+// which will enable automatically generated help and register related options.
 type Config struct {
-	sync.RWMutex
-	Target         interface{}
-	Description    string
+	mu             sync.RWMutex
+	target         interface{}
+	description    string
 	configFile     string
 	configModified time.Time
 	examples       []string
 	settings       []setting
-	sighup         chan os.Signal
+}
+
+func (c *Config) isNumeric(t reflect.Kind) bool {
+	switch t {
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64, reflect.Float32, reflect.Float64:
+		return true
+	}
+	return false
+}
+
+func (c *Config) convert(d reflect.Value, v interface{}) interface{} {
+	t := d.Kind()
+	in := reflect.TypeOf(v).Kind()
+	switch {
+	case in == reflect.String && t == reflect.Bool:
+		if r, err := strconv.ParseBool(v.(string)); err == nil {
+			return r
+		}
+	case in == reflect.String && c.isNumeric(t):
+		if r, err := strconv.ParseFloat(v.(string), 64); err == nil {
+			return r
+		}
+	case in == reflect.Map && t == reflect.Struct:
+		if p, ok := v.(map[string]interface{}); ok {
+			c.cast(d.Addr().Interface(), p, map[string]interface{}{})
+			return p
+		}
+	}
+	return v
+}
+
+func (c *Config) cast(o interface{}, m map[string]interface{}, discard map[string]interface{}) {
+	d := reflect.ValueOf(o).Elem()
+	for k, v := range m {
+		if _, ok := discard[k]; ok {
+			continue
+		}
+		for i := 0; i < d.NumField(); i++ {
+			if n := strings.Split(d.Type().Field(i).Tag.Get("json"), ",")[0]; n == "-" || n != k {
+				continue
+			}
+			discard[k] = struct{}{}
+			m[k] = c.convert(d.Field(i), v)
+		}
+		if _, ok := discard[k]; ok {
+			continue
+		}
+		for i := 0; i < d.NumField(); i++ {
+			if k != d.Type().Field(i).Name {
+				continue
+			}
+			discard[k] = struct{}{}
+			m[k] = c.convert(d.Field(i), v)
+		}
+	}
+	for i := 0; i < d.NumField(); i++ {
+		if t := strings.Split(d.Type().Field(i).Tag.Get("json"), ",")[0]; t != "" || d.Field(i).Kind() != reflect.Struct || !d.Type().Field(i).Anonymous || len(m) <= len(discard) {
+			continue
+		}
+		c.cast(reflect.New(d.Field(i).Type()).Interface(), m, discard)
+	}
 }
 
 func (c *Config) merge(maps ...map[string]interface{}) map[string]interface{} {
@@ -70,82 +128,32 @@ func (c *Config) merge(maps ...map[string]interface{}) map[string]interface{} {
 	return m
 }
 
-func (c *Config) isNumeric(t reflect.Kind) bool {
-	switch t {
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64, reflect.Float32, reflect.Float64:
-		return true
+func (c *Config) to(data ...map[string]interface{}) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.target == nil {
+		return errNilTarget
 	}
-	return false
-}
-
-func (c *Config) cast(o interface{}, m map[string]interface{}, discard map[string]interface{}) {
-	d := reflect.ValueOf(o).Elem()
-	for i := 0; i < d.NumField(); i++ {
-		t := strings.Split(d.Type().Field(i).Tag.Get("json"), ",")[0]
-		if t == "-" {
-			continue
-		}
-		n := d.Type().Field(i).Name
-		tr := d.Field(i).Kind()
-		for k, v := range m {
-			if _, ok := discard[k]; !ok && (t == k || (t == "" && n == k)) {
-				discard[k] = struct{}{}
-				in := reflect.TypeOf(v).Kind()
-				switch {
-				case in == reflect.String && tr == reflect.Bool:
-					m[k], _ = strconv.ParseBool(v.(string))
-				case in == reflect.String && c.isNumeric(tr):
-					m[k], _ = strconv.ParseFloat(v.(string), 64)
-				case in == reflect.Map && tr == reflect.Struct:
-					if p, ok := v.(map[string]interface{}); ok {
-						c.cast(d.Field(i).Addr().Interface(), p, map[string]interface{}{})
-					}
-				}
-			}
-		}
-	}
-	for i := 0; i < d.NumField(); i++ {
-		if t := strings.Split(d.Type().Field(i).Tag.Get("json"), ",")[0]; t != "" || d.Field(i).Kind() != reflect.Struct {
-			continue
-		}
-		c.cast(reflect.New(d.Field(i).Type()).Interface(), m, discard)
-	}
-}
-
-func (c *Config) to(data ...map[string]interface{}) {
-	c.Lock()
-	defer c.Unlock()
 	combo := c.merge(data...)
-	if c.Target != nil {
-		if c, e := c.Target.(locker); e {
-			c.Lock()
-			defer c.Unlock()
-		}
-		c.cast(c.Target, combo, map[string]interface{}{})
-		final, _ := json.Marshal(combo)
-		json.Unmarshal(final, c.Target)
-		if l, e := c.Target.(logger); e {
-			l.Info("Configuration: %#v\n", c.Target)
-		}
+	if l, e := c.target.(locker); e {
+		l.Lock()
+		defer l.Unlock()
 	}
+	c.cast(c.target, combo, map[string]interface{}{})
+	final, _ := json.Marshal(combo)
+	return json.Unmarshal(final, c.target)
 }
 
 func (c *Config) set(cursor map[string]interface{}, key string, value interface{}) {
 	keys := strings.Split(key, ".")
 	for i, k := range keys {
-		if i+1 == len(keys) || keys[i+1] == "" {
+		if i+1 == len(keys) {
 			cursor[k] = value
 		} else {
 			if _, ok := cursor[k]; !ok {
 				cursor[k] = map[string]interface{}{}
 			}
-			if v, ok := cursor[k].(map[string]interface{}); !ok {
-				t := map[string]interface{}{}
-				cursor[k] = t
-				cursor = t
-			} else {
-				cursor = v
-			}
+			cursor = cursor[k].(map[string]interface{})
 		}
 	}
 }
@@ -164,12 +172,12 @@ func (c *Config) parseEnvs() map[string]interface{} {
 }
 
 func (c *Config) help(discontinue bool) {
-	c.RLock()
-	defer c.RUnlock()
-	if c.Description == "" {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.description == "" {
 		return
 	}
-	fmtPrintf("[%s]\nDescription:\n\t%s\n", appName, c.Description)
+	fmtPrintf("[%s]\nDescription:\n\t%s\n", appName, c.description)
 	fmtPrintf("\n\nFlags:\n")
 	fmtPrintf("\t%s\n\t\t%s\n\n", "help, -h, --help", "display help information")
 	for _, o := range c.settings {
@@ -238,7 +246,6 @@ func (c *Config) parseOptions() map[string]interface{} {
 		} else if len(arg) == 1 || !strings.HasPrefix(arg, "-") {
 			continue
 		}
-
 		if arg := os.Args[i]; strings.HasPrefix(arg, "--") {
 			c.parseLong(&i, vars)
 		} else {
@@ -253,198 +260,204 @@ func (c *Config) comment(data []byte) []byte {
 	return re.ReplaceAll(data, []byte("$1"))
 }
 
-func (c *Config) readfile() (map[string]interface{}, error) {
+func (c *Config) readFile() (map[string]interface{}, error) {
 	vars := make(map[string]interface{})
-
-	c.Lock()
-	defer c.Unlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	modTime := c.configModified
 	if fi, err := stat(c.configFile); err == nil {
 		if modTime = fi.ModTime(); c.configModified.Equal(modTime) {
-			return vars, nil
+			return vars, errNoChanges
 		}
 	}
-
 	data, err := readfile(c.configFile)
 	if err != nil {
-		if l, ok := c.Target.(logger); ok {
-			l.Debug("failed to read %s (%s)", c.configFile, err)
-		}
 		return vars, err
 	}
-
-	if err := json.Unmarshal(c.comment(data), &vars); err != nil {
-		if l, ok := c.Target.(logger); ok {
-			l.Debug("failed to parse %s (%s)", c.configFile, err)
-		}
-		return vars, err
-	}
-
 	c.configModified = modTime
-	return vars, nil
+	err = json.Unmarshal(c.comment(data), &vars)
+	return vars, err
 }
 
-func (c *Config) parseFiles(filenames ...string) map[string]interface{} {
+func (c *Config) parseFiles(filenames ...string) (map[string]interface{}, error) {
 	vars := make(map[string]interface{})
-
-	if c.ConfigFile() != "" {
-		vars, _ := c.readfile()
-		return vars
-	}
-
-	for _, p := range paths {
-		for _, f := range filenames {
-			c.Lock()
-			c.configFile = filepath.Join(p, f)
-			c.Unlock()
-			if vars, err := c.readfile(); err == nil {
-				return vars
+	for _, f := range filenames {
+		if filepath.IsAbs(f) {
+			c.mu.Lock()
+			c.configFile = f
+			c.mu.Unlock()
+			if vars, err := c.readFile(); err == nil {
+				return vars, nil
+			}
+		} else {
+			for _, p := range paths {
+				c.mu.Lock()
+				c.configFile = filepath.Join(p, f)
+				c.mu.Unlock()
+				if vars, err := c.readFile(); err == nil {
+					return vars, nil
+				}
 			}
 		}
 	}
-
-	c.Lock()
+	c.mu.Lock()
 	c.configFile = filepath.Join(paths[len(paths)-1], filenames[0])
-	c.Unlock()
-	c.Save()
-	return vars
+	c.mu.Unlock()
+	return vars, c.Save()
 }
 
-func (c *Config) signal() {
-	for _ = range c.sighup {
-		c.Reload()
+// Set the configuration target using this method.
+func (c *Config) Target(t interface{}) {
+	c.mu.Lock()
+	c.target = t
+	c.mu.Unlock()
+}
+
+// You can register any json tag or public property by name here.  To deal with
+// depth you can use dot-notation (eg. parent.child).  The description, while
+// optional, will be used to generate help information.
+//
+// The name must not be empty, and a non-empty environment variable or at least
+// one command line option must be supplied. If the parameters are invalid,
+// or the name has already been registered, an error will be returned. Finally
+// if the name has bad syntax for child properties an error will be returned.
+//
+// Duplicate environment variables or command line options are accepted.
+//
+// As defined by some POSIX getopt implementations, a colon suffix (:) is used
+// to define explicit notation for greedy parameters, which can help deal with
+// single-character command line options when the supplied value matches
+// another registered single-character command line option.
+func (c *Config) Add(name, description, env string, options ...string) error {
+	if name == "" {
+		return errEmptyName
+	} else if env == "" && len(options) == 0 {
+		return errNoEnvOptions
+	} else if name == "." || strings.HasPrefix(name, ".") || strings.HasSuffix(name, ".") || strings.Contains(name, "..") {
+		return errBadNameSyntax
 	}
-}
-
-// Used to manually reload changes from the configuration file, and called when
-// a sighup is received.  It will check the modified time for changes first,
-// and if the Target has a Callback function it will be executed for
-// post-processing.
-func (c *Config) Reload() {
-	if c.ConfigFile() == "" {
-		return
-	} else if v, err := c.readfile(); err == nil && len(v) > 0 {
-		c.to(v)
-		if cb, e := c.Target.(callbacker); e {
-			cb.Callback()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, s := range c.settings {
+		if s.Name == name {
+			return errConflictingAdd
 		}
 	}
-}
-
-// For cases where you want to persist changes to the configuration target,
-// this function will save to the ConfigFile identified during Load.
-func (c *Config) Save() {
-	c.RLock()
-	defer c.RUnlock()
-	if c.configFile == "" {
-		return
-	}
-
-	mkdirall(filepath.Dir(c.configFile), 0775)
-	f, err := create(c.configFile)
-	if err != nil {
-		if l, ok := c.Target.(logger); ok {
-			l.Debug("failed to save %s (%s)", c.configFile, err)
-		}
-		return
-	}
-	defer f.Close()
-
-	enc := json.NewEncoder(f)
-	enc.SetIndent("", "\t")
-	enc.Encode(c.Target)
-}
-
-// This is the primary function of the application, which abstracts the entire
-// logical process of merging inputs from command line, environment variables
-// and json file data onto the Target.
-//
-// A POSIX compatible getopt command line parser is run first to deal with
-// optional help flags and terminate prior to any file system access.
-//
-// Custom file names may be supplied, and will be appended to the package paths
-// but empty file may names supplied will be ignored.  The default  file name
-// used is the application name as a directory followed by the application
-// name again, then .json (eg. app/app.json).  If no file is found, it uses the
-// first supplied file name to create one with the default properties on the
-// Target.
-//
-// Data loaded from a file will apply if it matches any json tags or property
-// names, even if they were not registered with Add().  File configuration is
-// generally useful when you have complex data structures that cannot be easily
-// represented with strings via command line options or environment variables.
-//
-// While json does not provide support for comments, if // or /**/ comments
-// are found they will be safely filtered from the file (unless inside quotes).
-//
-// Both command line options and environment variables are assigned using
-// reflection to check and cast to json compatible types.
-//
-// Once run it will optionally establish a sighup listener on supported
-// platforms allowing configuration file reloads to override the state of the
-// configuration target.
-//
-// If the Target provides Info and Debug functions, errors encountered will be
-// printed; unmarshalling the final json onto the Target, saving to a file, and
-// the resulting target after loading.
-//
-// The operation is concurrently safe, and performs a lock prior to running
-// any steps that touch its own properties.  It also optionally locks the
-// configuration target, if available functions exist (Lock() and Unlock()).
-//
-// Just before returning it will check for a Callback function on the Target
-// and trigger it, allowing post-processing or asynchronous handlers to run.
-func (c *Config) Load(filenames ...string) {
-	opts := c.parseOptions()
-	for i := len(filenames) - 1; i >= 0; i-- {
-		if filenames[i] == "" {
-			filenames = append(filenames[:i], filenames[i+1:]...)
-		}
-	}
-	c.to(c.parseFiles(append(filenames, appName+".json")...), c.parseEnvs(), opts)
-
-	c.Lock()
-	if goos != "windows" && c.sighup == nil {
-		c.sighup = make(chan os.Signal)
-		go c.signal()
-		signal.Notify(c.sighup, syscall.SIGHUP)
-	}
-	if cb, e := c.Target.(callbacker); e {
-		cb.Callback()
-	}
-	c.Unlock()
-}
-
-// You can register any json tag or property here, using dot-notation to depict
-// depth (eg. parent.child).  A description may be supplied for help output,
-// and it expects either a non-empty environment variable or at least one
-// command line option to be accepted.
-//
-// It will not notify you if the same property, command line option, or
-// environment variable has already been registered.
-//
-// As defined by some POSIX getopt implementations, a colon suffix (:) is
-// used to define explicit notation for greedy parameters.
-func (c *Config) Add(name, description, env string, options ...string) {
-	if name == "" || (env == "" && len(options) == 0) {
-		return
-	}
-	c.Lock()
 	c.settings = append(c.settings, setting{
 		Name:        name,
 		Description: description,
 		Env:         env,
 		Options:     options,
 	})
-	c.Unlock()
+	return nil
+}
+
+// To enable automated help, set a non-empty description.
+func (c *Config) Description(d string) {
+	c.mu.Lock()
+	c.description = d
+	c.mu.Unlock()
 }
 
 // Provides a registration for custom examples of command line use cases,
 // automatically prefixed by the application name.
 func (c *Config) Example(example string) {
-	c.Lock()
+	if example == "" {
+		return
+	}
+	c.mu.Lock()
 	c.examples = append(c.examples, example)
-	c.Unlock()
+	c.mu.Unlock()
+}
+
+// This is the primary function of the application, which abstracts the entire
+// logical process of merging inputs from command line, environment variables
+// and json file data onto the configuration target.
+//
+// A POSIX compatible getopt command line parser is run first to deal with
+// optional help flags and terminate prior to any file system access.
+//
+// Custom paths may be supplied, both relative to the system paths or absolute
+// for full control.  Empty names will be discarded and ignored.  The default
+// name used is the application name as a directory then again as a .json file.
+// If no file is found, it uses the first name supplied (or the default) plus
+// the default userspace path (unless the file name is absolute) to save the
+// defaults on the configuration target.
+//
+// Data loaded from a file is applied directly and follows the same rules as
+// json unmarshal.  This means tags first, then property names, finally any
+// non-ambiguous properties matching anonynous composite structures.  File
+// configuration is generally useful when you have complex data structures
+// which cannot easily be represented using strings.
+//
+// While json does not provide support for comments, if // or /**/ comments
+// are found they will be safely filtered from the file (unless inside quotes).
+//
+// Both command line options and environment variables are converted to the
+// configuration targets expected types using reflection prior to being run
+// through json unmarshal.
+//
+// If any steps fail, the errors will be collected and aggregated for the
+// response, however the system will still make a complete attempt to load
+// which means the errors may be treated as non-critical.
+//
+// The operation is concurrently safe, and performs a lock prior to running
+// any steps that touch its own properties.  If the target supports mutex
+// locking it will lock while applying configuration.
+//
+// Finally, it returns with an aggregate of any errors that were encountered
+// giving the developer the option of printing them or terminating.
+func (c *Config) Load(filenames ...string) error {
+	opts := c.parseOptions()
+	for i := len(filenames) - 1; i >= 0; i-- {
+		if filenames[i] == "" {
+			filenames = append(filenames[:i], filenames[i+1:]...)
+		}
+	}
+	files, err := c.parseFiles(append(filenames, filepath.Join(appName, appName+".json"))...)
+	if e := c.to(files, c.parseEnvs(), opts); e != nil {
+		if err != nil {
+			return fmt.Errorf("%s\n%s", err.Error(), e.Error())
+		}
+		return e
+	}
+	return err
+}
+
+// Used to manually reload changes from the configuration file, if the file has
+// been modified since the last attempt to load it.
+func (c *Config) Reload() error {
+	if c.ConfigFile() == "" {
+		return errEmptyConfig
+	}
+	v, err := c.readFile()
+	if err == nil && len(v) > 0 {
+		return c.to(v)
+	}
+	return err
+}
+
+// For cases where you want to persist changes to the configuration target,
+// this function will save an intended readable json file to the ConfigFile
+// identified during Load, or it will return an error if any step fails.
+func (c *Config) Save() error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.configFile == "" {
+		return errEmptyConfig
+	}
+	mkdirall(filepath.Dir(c.configFile), 0775)
+	f, err := create(c.configFile)
+	if err != nil {
+		return err
+	}
+	enc := json.NewEncoder(f)
+	enc.SetIndent("", "\t")
+	if err := enc.Encode(c.target); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 // If the instance has a non-empty Description the help will be printed,
@@ -455,7 +468,8 @@ func (c *Config) Help() {
 
 // After Load this will return the full path to the preferred file.
 func (c *Config) ConfigFile() string {
-	c.RLock()
-	defer c.RUnlock()
-	return c.configFile
+	c.mu.RLock()
+	cf := c.configFile
+	c.mu.RUnlock()
+	return cf
 }

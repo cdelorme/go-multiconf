@@ -3,36 +3,13 @@ package gonf
 import (
 	"errors"
 	"fmt"
-	// "io"
 	"io/ioutil"
 	"os"
+	"path/filepath"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 )
-
-type mockLogger struct {
-	Store string
-}
-
-func (self *mockLogger) Info(f string, args ...interface{})  { self.Store = fmt.Sprintf(f, args...) }
-func (self *mockLogger) Debug(f string, args ...interface{}) { self.Store = fmt.Sprintf(f, args...) }
-
-// composite object demonstrating that "unnamed" composition
-// receives properties and casting is correctly handled
-type mockCompositeConfig struct {
-	Implicit bool
-	Tagged   int `json:"implicit,omitempty"`
-	Conflict int `json:"conflict,omitempty"`
-}
-
-// functions that validate dynamic behavior
-// and demonstrate fmt property protection
-func (self mockCompositeConfig) String() string                { return "correct" }
-func (self mockCompositeConfig) GoString() string              { return self.String() }
-func (self *mockCompositeConfig) MarshalJSON() ([]byte, error) { return []byte(self.String()), nil }
-func (self *mockCompositeConfig) Callback()                    {}
 
 // mockStat (shamelessly "borrowed" from `types_unix.go`)
 type mockStat struct {
@@ -51,571 +28,426 @@ func (self *mockStat) Mode() os.FileMode  { return self.mode }
 func (self *mockStat) ModTime() time.Time { return self.modTime }
 func (self *mockStat) Sys() interface{}   { return &self.sys }
 
-// parent level structure demonstrating the use of composition
-// to induce dynamic functionality (locking & logging)
-// while also demonstrating correct handling of property conflicts
-// when dealing with implicit or unnamed composite structures
+type Deeper struct {
+	TripleDepth string
+}
+
+type Composite struct {
+	Deeper
+	DepthByOption int
+	DepthByEnv    bool
+}
+
 type mockConfig struct {
 	sync.Mutex
-	mockLogger
-	mockCompositeConfig
 
-	Conflict string  `json:"conflict,omitempty"`
-	Name     string  `json:"name,omitempty"`
-	Number   float32 `json:"number,omitempty"`
-	Boolean  bool    `json:"boolean,omitempty"`
-	Ignored  bool    `json:"-"`
+	Composite
+	ExplicitComposite Composite
 
-	Named struct {
-		Data int `json:"data,omitempty"`
-	} `json:"named,omitempty"`
+	GetoptSkip                bool
+	GetoptGreedy              string
+	GetoptShortGreedySpace    string
+	GetoptShortGreedyConflict string
+	GetoptShort               bool
+	GetoptComboShortL         bool
+	GetoptComboShortO         bool
+	GetoptComboShortN         bool
+	GetoptComboShortG         string
+	GetoptFirstLong           string
+	GetoptSecondLong          string
+	GetoptLongBool            bool
+
+	OptionString string
+	OptionNumber float32
+	OptionBool   bool
+
+	EnvString string
+	EnvNumber int
+	EnvBool   bool
+
+	EnvByTag    string `json:"envByTag"`
+	OptionByTag string `json:"optionByTag"`
+
+	FileUnregisteredTag      string `json:"fileUnregisteredTag"`
+	FileUnregisteredProperty string
+
+	EnvOverrideFile   string
+	OptionOverrideEnv string
 }
 
-var (
-	code          int
-	filedata      string
-	mockError     = errors.New("mock error")
-	fileerror     error
-	createerror   error
-	mockFileStat  = &mockStat{modTime: time.Now()}
-	mockStatError error
-)
+var mockError error = errors.New("mock error")
+var commentedFileData string = `{
+	// this is a comment
+	"fileUnregisteredTag": "// this value is safely parsed",
+	/*this is
+	"FileUnregisteredProperty": "this is ignored"
+	also a
+	comment*/
+	"FileUnregisteredProperty": "/* this value is also safely parsed */"
+}`
 
-func TestConfigMerge(t *testing.T) {
-	o := &Config{}
+func TestPlacebo(_ *testing.T) {}
 
-	// maps to test merging and depth
-	m1 := map[string]interface{}{"key": "value", "b": true, "deep": map[string]interface{}{"copy": "me"}, "fail": map[string]interface{}{"no": false}}
-	m2 := map[string]interface{}{"key": "value2", "a": 1, "deep": map[string]interface{}{"next": "keypair"}, "fail": "test"}
-
-	// acquire results /w assertions and validate
-	v := o.merge(m1, m2)
-	if v["key"] != "value2" || v["a"] != 1 || v["b"] != true || v["fail"] != "test" {
-		t.FailNow()
-	}
-	if m, ok := v["deep"].(map[string]interface{}); !ok || m["next"] != "keypair" || m["copy"] != "me" {
-		t.FailNow()
-	}
+func TestTarget(_ *testing.T) {
+	c := &Config{}
+	c.Target(nil)
 }
 
-func TestConfigCast(t *testing.T) {
-	g := &Config{Target: &mockConfig{}}
-
-	// prepare map matching config struct to verify types after
-	m := map[string]interface{}{
-		"name":     "casey",
-		"number":   "15.9",
-		"boolean":  "true",
-		"conflict": "42",
-		"named":    map[string]interface{}{"data": "42"},
+func TestAdd(t *testing.T) {
+	c := &Config{}
+	if c.Add("cli", "registration of option only", "", "--option-only") != nil {
+		t.Error("failed: registration of option only...")
 	}
-
-	g.cast(g.Target, m, map[string]interface{}{})
-	if d, e := m["number"].(float64); !e || d != 15.9 {
-		t.FailNow()
-	} else if d, e := m["boolean"].(bool); !e || !d {
-		t.FailNow()
-	} else if s, ok := m["conflict"].(string); !ok || s != "42" {
-		t.FailNow()
-	} else if d, e := m["named"]; !e {
-		t.FailNow()
-	} else if tm, ok := d.(map[string]interface{}); !ok {
-		t.FailNow()
-	} else if v, ok := tm["data"]; !ok {
-		t.FailNow()
-	} else if f, ok := v.(float64); !ok || f != 42 {
-		t.FailNow()
+	if c.Add("env", "registration of env only", "TEST") != nil {
+		t.Error("failed: registration of env only...")
 	}
-}
-
-func TestConfigTo(t *testing.T) {
-	c := &mockConfig{}
-	o := &Config{Target: c}
-
-	// map with edge cases to validate expected behavior
-	m := map[string]interface{}{
-		"number":  15.9,
-		"Number":  "banana",
-		"name":    "hammock",
-		"Boolean": true,
-		"extra":   "pay me no mind",
-		"named":   map[string]interface{}{"Data": 123},
+	if c.Add("deep.test", "registration of deep property", "TEST") != nil {
+		t.Error("failed: registration of deep property...")
 	}
-
-	// populate configuration and validate properties
-	o.to(m)
-	if c.Number != 15.9 {
-		t.FailNow()
-	} else if c.Name != "hammock" {
-		t.FailNow()
-	} else if c.Boolean != true {
-		t.FailNow()
-	} else if c.Named.Data != 123 {
-		t.FailNow()
+	if c.Add("env", "registration of duplicate name", "TEST") == nil {
+		t.Error("failed: registration of duplicate name...")
+	}
+	if c.Add("", "registration with empty name", "TEST") == nil {
+		t.Error("failed: registration with empty name...")
+	}
+	if c.Add("noOptions", "registration without any env or options", "") == nil {
+		t.Error("failed: registration without any env or options...")
+	}
+	if c.Add(".bad", "registration of with bad name syntax prefix", "TEST") == nil {
+		t.Error("failed: registration of with bad name syntax prefix...")
+	}
+	if c.Add("bad.", "registration of with bad name syntax prefix", "TEST") == nil {
+		t.Error("failed: registration of with bad name syntax prefix...")
+	}
+	if c.Add("bad..name", "registration of with bad name syntax prefix", "TEST") == nil {
+		t.Error("failed: registration of with bad name syntax prefix...")
+	}
+	if c.Add(".", "registration of with bad name syntax prefix", "TEST") == nil {
+		t.Error("failed: registration of with bad name syntax prefix...")
 	}
 }
 
-func TestConfigSet(t *testing.T) {
-	o := &Config{}
-	m := map[string]interface{}{"x": false}
-
-	// test single key/value
-	o.set(m, "key", "value")
-	if m["key"] != "value" {
-		t.FailNow()
-	}
-
-	// test depth via period and number
-	o.set(m, "go.deeper", 123)
-	if d, ok := m["go"]; !ok {
-		t.FailNow()
-	} else if tm, ok := d.(map[string]interface{}); !ok {
-		t.FailNow()
-	} else if v, ok := tm["deeper"]; !ok {
-		t.FailNow()
-	} else if f, ok := v.(int); !ok || f != 123 {
-		t.FailNow()
-	}
-
-	// test depth via period using override
-	o.set(m, "x.truthy", true)
-	if d, ok := m["x"]; !ok {
-		t.FailNow()
-	} else if tm, ok := d.(map[string]interface{}); !ok {
-		t.FailNow()
-	} else if v, ok := tm["truthy"]; !ok {
-		t.FailNow()
-	} else if f, ok := v.(bool); !ok || !f {
-		t.FailNow()
-	}
+func TestDescription(_ *testing.T) {
+	c := &Config{}
+	c.Description("")
 }
 
-func TestConfigParseEnvs(t *testing.T) {
-	os.Clearenv()
+func TestExample(_ *testing.T) {
+	c := &Config{}
+	c.Example("") // empty input is discarded
+	c.Example("--not-empty")
+}
+
+func TestLoad(t *testing.T) {
+	d, e := ioutil.TempDir(os.TempDir(), "gonf")
+	if e != nil {
+		t.Error("failed to acquire temporary directory...")
+	}
+	cf := filepath.Join(d, "gonf.json")
+	defer os.Remove(cf)
+
+	// clear all inputs so we start from a blank slate
 	os.Args = []string{}
-	o := &Config{}
-
-	// register multiple settings
-	o.Add("test", "", "MULTICONF_TEST_ENVVAR")
-	o.Add("testing.depth", "", "MULTICONF_TEST_DEPTH")
-	o.Add("testing.depth.deeper", "", "MULTICONF_TEST_DEEPER")
-	o.Add("empty", "", "", "-e")
-
-	// set env vars for testing parse
-	os.Setenv("MULTICONF_TEST_ENVVAR", "narp")
-	os.Setenv("MULTICONF_TEST_DEPTH", "yarp")
-	os.Setenv("MULTICONF_TEST_DEEPER", "yarp")
-
-	// parse env
-	v := o.parseEnvs()
-
-	// verify results
-	if v["test"] != "narp" {
-		t.FailNow()
-	}
-	if _, ok := v["testing"]; !ok {
-		t.FailNow()
-	}
-}
-
-func TestConfigPrivateHelp(t *testing.T) {
-	exit = func(c int) { code = c }
-	fmtPrintf = func(f string, a ...interface{}) (int, error) { return fmt.Fprintf(ioutil.Discard, f, a...) }
-
-	o := &Config{}
-	o.Add("cli", "test help cli flag", "", "-c", "--cli")
-	o.Add("env", "test help env", "env")
-	o.Add("both", "test help env and cli", "both", "-b", "--both")
-	o.Example("test help example")
-
-	// test without description
-	code = 1
-	o.help(true)
-	if code != 1 {
-		t.FailNow()
-	}
-
-	// test with description
-	o.Description = "testing help"
-	code = 1
-	o.help(true)
-	if code != 0 {
-		t.FailNow()
-	}
-}
-
-func TestConfigParseLong(t *testing.T) {
-	g := &Config{}
-
-	// register all combinations of flags
-	g.Add("first", "", "", "--first")
-	g.Add("greedy", "", "", "--greedy:")
-	g.Add("second", "", "", "--second")
-	g.Add("test.depth", "", "", "--depth")
-	g.Add("bad.depth.", "", "", "--bad")
-	g.Add("also..bad", "", "", "--also")
-	g.Add("test.depth.deeper", "", "", "--deeper")
-
-	var m map[string]interface{}
-
-	// test bypass
-	os.Args = []string{"--first", "--", "--first=skipped"}
-	m = g.parseOptions()
-	if m["first"] != true {
-		t.FailNow()
-	}
-
-	// test bypass with greedy
-	os.Args = []string{"--greedy", "--", "--greedy=skipped"}
-	m = g.parseOptions()
-	if m["greedy"] != true {
-		t.FailNow()
-	}
-
-	// test depth support
-	os.Args = []string{"--depth", "--deeper", "--bad", "--also"}
-	m = g.parseOptions()
-	if _, ok := m["test"]; !ok {
-		t.FailNow()
-	}
-
-	// sunny-day scenario
-	os.Args = []string{"--first=hasvalue", "--second", "hasvalue", "--greedy", "--eats-objects"}
-	m = g.parseOptions()
-	if m["first"] != "hasvalue" || m["second"] != "hasvalue" || m["greedy"] != "--eats-objects" {
-		t.FailNow()
-	}
-}
-
-func TestConfigParseShort(t *testing.T) {
-	g := &Config{}
-	g.Add("first", "", "", "-f")
-	g.Add("greedy", "", "", "-g:")
-	g.Add("second", "", "", "-2")
-	g.Add("test.depth", "", "", "-d")
-
-	var m map[string]interface{}
-
-	// with bypass
-	os.Args = []string{"-f", "--", "-2"}
-	m = g.parseOptions()
-	if _, ok := m["second"]; ok || m["first"] != true {
-		t.FailNow()
-	}
-
-	// greedy with bypass
-	os.Args = []string{"-g", "--", "-2"}
-	m = g.parseOptions()
-	if _, ok := m["second"]; ok || m["greedy"] != true {
-		t.FailNow()
-	}
-
-	// combination of flags starting with greedy
-	os.Args = []string{"-gf2"}
-	m = g.parseOptions()
-	if len(m) != 1 || m["greedy"] != "f2" {
-		t.FailNow()
-	}
-
-	// combination of flags
-	os.Args = []string{"-f2d"}
-	m = g.parseOptions()
-	if _, ok := m["test"]; !ok || m["first"] != true || m["second"] != true {
-		t.FailNow()
-	}
-
-	// combination of flags ending in greedy
-	os.Args = []string{"-f2g"}
-	m = g.parseOptions()
-	if m["first"] != true || m["second"] != true || m["greedy"] != true {
-		t.FailNow()
-	}
-
-	// combination with separate for final property
-	os.Args = []string{"-f2", "yarp"}
-	m = g.parseOptions()
-	if m["first"] != true || m["second"] != "yarp" {
-		t.FailNow()
-	}
-
-	// combination ending with greedy with separate for final property
-	os.Args = []string{"-f2g", "yarp"}
-	m = g.parseOptions()
-	if m["first"] != true || m["second"] != true || m["greedy"] != "yarp" {
-		t.FailNow()
-	}
-}
-
-func TestConfigParseOptions(t *testing.T) {
-	fmtPrintf = func(f string, a ...interface{}) (int, error) { return fmt.Fprintf(ioutil.Discard, f, a...) }
 	os.Clearenv()
 
-	g := &Config{Description: "testing parse options"}
-	g.Add("key", "test", "", "-k", "--key")
-	var m map[string]interface{}
+	// set defaults for overrides
+	var fileStat = &mockStat{modTime: time.Now()}
+	var statError error
+	var createFile *os.File
+	var createError error
+	var readfileError error
+	var readfileData []byte
+	var exitCode int = 1
+	var fmtPrintfData string = ""
 
-	// test bad-single-skip and bypass
-	os.Args = []string{"-", "--"}
-	m = g.parseOptions()
-	if len(m) != 0 {
-		t.FailNow()
+	// define overrides
+	stat = func(_ string) (os.FileInfo, error) { return fileStat, statError }
+	create = func(string) (*os.File, error) { return createFile, createError }
+	readfile = func(string) ([]byte, error) { return readfileData, readfileError }
+	mkdirall = func(string, os.FileMode) error { return nil }
+	exit = func(i int) { exitCode = i }
+	fmtPrintf = func(f string, a ...interface{}) (int, error) {
+		fmtPrintfData = fmt.Sprintf(f, a...)
+		return len(fmtPrintfData), nil
 	}
 
-	// test help in all three standard forms
-	code, os.Args = 1, []string{"help"}
-	m = g.parseOptions()
-	if code != 0 {
-		t.FailNow()
+	c := &Config{}
+	mc := &mockConfig{}
+
+	// test nil target /w empty, absolute, and relative name overrides
+	if c.Load("", cf, "test.gonf.json") == nil {
+		t.Error("failed to identify nil target...")
+	}
+	c.Target(mc)
+
+	// test with matching modtime
+	c.configModified = fileStat.ModTime()
+	if c.Load(cf) == nil {
+		t.Error("failed to capture unchanged file error...")
+	}
+	statError = mockError
+
+	// test read file error
+	readfileError = mockError
+	if c.Load(cf) == nil {
+		t.Error("failed to capture read file error...")
+	}
+	readfileError = nil
+
+	// test read file bad json
+	readfileData = []byte("this is not json")
+	if c.Load(cf) == nil {
+		t.Error("failed to capture json parse error...")
 	}
 
-	code, os.Args = 1, []string{"-h"}
-	m = g.parseOptions()
-	if code != 0 {
-		t.FailNow()
+	// test read file with file comments and unregistered tags using absolute path
+	readfileData = []byte(commentedFileData)
+	if c.Load(cf) != nil || mc.FileUnregisteredProperty != "/* this value is also safely parsed */" || mc.FileUnregisteredTag != "// this value is safely parsed" {
+		t.Error("failed to filter comments with absolute file...")
 	}
 
-	code, os.Args = 1, []string{"--help"}
-	m = g.parseOptions()
-	if code != 0 {
-		t.FailNow()
+	// test read file with file comments and unregistered tags using (default) relative path
+	if c.Load() != nil || mc.FileUnregisteredProperty != "/* this value is also safely parsed */" || mc.FileUnregisteredTag != "// this value is safely parsed" {
+		t.Error("failed to filter comments with relative file...")
 	}
 
-	// test last help format without a description
-	g.Description = ""
-	m = g.parseOptions()
-	if m == nil {
-		t.FailNow()
+	// test registration by tag
+	c.Add("envByTag", "testing environment by tag", "ENV_BY_TAG")
+	c.Add("optionByTag", "testing option by tag", "", "--option-by-tag")
+	os.Args = []string{"--option-by-tag=test"}
+	os.Setenv("ENV_BY_TAG", "test")
+	if c.Load() != nil || mc.EnvByTag != "test" || mc.OptionByTag != "test" {
+		t.Error("failed to parse input by tags...")
 	}
-
-	// test invalid
-	os.Args = []string{"blah"}
-	m = g.parseOptions()
-	if len(m) != 0 {
-		t.FailNow()
-	}
-
-	// test short and long
-	os.Args = []string{"-k", "--key"}
-	m = g.parseOptions()
-	if m["key"] != true {
-		t.FailNow()
-	}
-}
-
-func TestConfigComment(t *testing.T) {
-	g := Config{}
-
-	before := []byte(`{
-		// remove this
-		//remove this
-		"key": " // keep this" // remove this
-		/ / keep bad syntax
-/*
-		"removed": "this is removed"
-		*/
-		"keep": " /* this is to be kept*/"
-		/*"termination": "can happen inside quotes*/"
-	}`)
-	after := []byte(`{
-						"key": " // keep this" 		/ / keep bad syntax
-
-		"keep": " /* this is to be kept*/"
-		"
-	}`)
-
-	// verify that we strip single and multi-line comments outside quotes
-	if o := g.comment(before); string(o) != string(after) {
-		t.FailNow()
-	}
-}
-
-func TestConfigReadfile(t *testing.T) {
-	stat = func(_ string) (os.FileInfo, error) { return mockFileStat, mockStatError }
-	readfile = func(name string) ([]byte, error) { return []byte(filedata), fileerror }
-	o := &Config{Target: &mockConfig{}}
-
-	// test successful return
-	filedata = `{
-			"key": 123,
-			"name": "casey",
-			"extra": {
-				"data": 123,
-				"correct": true
-			},
-			"Final": true
-		}`
-	if v, e := o.readfile(); e != nil || len(v) == 0 {
-		t.FailNow()
-	}
-
-	// test json parsing error
-	filedata = `not valid json`
-	o.configModified = time.Time{}
-	if v, e := o.readfile(); e == nil || len(v) != 0 {
-		t.FailNow()
-	}
-
-	// test readfile error
-	fileerror = mockError
-	o.configModified = time.Time{}
-	if v, e := o.readfile(); e == nil || len(v) != 0 {
-		t.FailNow()
-	}
-
-	// test configModified
-	o.configModified = mockFileStat.modTime
-	if v, e := o.readfile(); e != nil || len(v) != 0 {
-		t.FailNow()
-	}
-}
-
-func TestConfigParseFiles(t *testing.T) {
-	stat = func(_ string) (os.FileInfo, error) { return mockFileStat, mockStatError }
-	readfile = func(name string) ([]byte, error) { return []byte(filedata), fileerror }
-	o := &Config{Target: &mockConfig{}}
-	paths = []string{"/tmp/nope"}
-
-	// test no files (empty data)
-	fileerror = mockError
-	if v := o.parseFiles(appName); len(v) > 0 {
-		t.FailNow()
-	}
-
-	// test file match /w valid filedata
-	fileerror = nil
-	filedata = `{
-			"key": 123,
-			"name": "casey",
-			"extra": {
-				"data": 123,
-				"correct": true
-			},
-			"Final": true
-		}`
-	o.configFile = ""
-	if v := o.parseFiles(appName); len(v) == 0 {
-		t.FailNow()
-	}
-
-	// test from existing configFile
-	o.configModified = time.Time{}
-	if v := o.parseFiles(appName); len(v) == 0 {
-		t.FailNow()
-	}
-}
-
-func TestConfigPublicReload(_ *testing.T) {
-	stat = func(_ string) (os.FileInfo, error) { return mockFileStat, mockStatError }
-	readfile = func(name string) ([]byte, error) { return []byte(filedata), fileerror }
-	g := &Config{Target: &mockConfig{}}
-
-	// without config file
-	g.Reload()
-
-	// with config file
-	g.configFile = "/tmp/test.gonf.json"
-	g.Reload()
-}
-
-func TestConfigPublicSave(_ *testing.T) {
-	mkdirall = func(_ string, _ os.FileMode) error { return nil }
-	create = func(_ string) (*os.File, error) { return nil, createerror }
-	g := &Config{Target: &mockConfig{}}
-
-	// test empty configuration file
-	g.Save()
-
-	// test valid configuration file
-	g.configFile = "/tmp/gonf"
-	g.Save()
-
-	// test with save fail
-	createerror = mockError
-	g.Save()
-}
-
-func TestConfigPublicLoad(t *testing.T) {
-	exit = func(c int) { code = c }
-	fmtPrintf = func(f string, a ...interface{}) (int, error) { return fmt.Fprintf(ioutil.Discard, f, a...) }
-	stat = func(_ string) (os.FileInfo, error) { return mockFileStat, mockStatError }
-	readfile = func(name string) ([]byte, error) { return []byte(filedata), fileerror }
-	mkdirall = func(_ string, _ os.FileMode) error { return nil }
-	create = func(_ string) (*os.File, error) { return nil, createerror }
-	goos = "linux"
-
-	c := &mockConfig{Name: "casey"}
-	g := &Config{Target: c}
-	g.Add("name", "test-overrides-from-public-load", "TEST_NAME", "-a:")
-
-	// clear all inputs
-	filedata = ""
 	os.Clearenv()
-	os.Args = []string{}
 
-	// verify defaults remain with no contents
-	g.Load()
-	if c.Name != "casey" {
+	// test posix getopt complaint behavior
+	c.Add("GetoptSkip", "", "", "-s", "--skip")
+	c.Add("GetoptGreedy", "", "", "-e:")
+	c.Add("GetoptShortGreedySpace", "", "", "-a:")
+	c.Add("GetoptShortGreedyConflict", "", "", "-c:")
+	c.Add("GetoptShort", "", "", "-b")
+	c.Add("GetoptComboShortL", "", "", "-l")
+	c.Add("GetoptComboShortO", "", "", "-o")
+	c.Add("GetoptComboShortN", "", "", "-n")
+	c.Add("GetoptComboShortG", "", "", "-g:")
+	c.Add("GetoptFirstLong", "", "", "--long")
+	c.Add("GetoptSecondLong", "", "", "--second")
+	c.Add("GetoptLongBool", "", "", "--long-bool")
+	os.Args = []string{"-b", "-elong", "-a", "space", "-eshort", "-longshortl-o-n-g", "--long-bool", "--long=testlong1", "--second", "testlong2", "-", "--", "-s", "--skip"}
+	if c.Load() != nil || mc.GetoptFirstLong != "testlong1" || mc.GetoptSecondLong != "testlong2" ||
+		!mc.GetoptComboShortL || !mc.GetoptComboShortO || !mc.GetoptComboShortN ||
+		mc.GetoptComboShortG != "shortl-o-n-g" || !mc.GetoptShort ||
+		mc.GetoptShortGreedySpace != "space" || mc.GetoptGreedy != "short" ||
+		mc.GetoptShortGreedyConflict != "" || mc.GetoptSkip || !mc.GetoptLongBool {
+		t.Error("failed getopt behavior test...")
+	}
+
+	// test duplicate registrations with casting
+	c.Add("OptionString", "string type via command line option", "", "--optionDuplicate")
+	c.Add("OptionNumber", "", "", "--optionDuplicate")
+	c.Add("OptionBool", "demonstrate boolean casting and duplicate command line option registration", "", "--optionBool")
+	c.Add("EnvString", "string type via environment variable", "ENV_DUPLICATE")
+	c.Add("EnvNumber", "demonstrate numeric casting and duplicate environment variable registration", "ENV_DUPLICATE")
+	c.Add("EnvBool", "demonstrate boolean casting and duplicate environment variable registration", "ENV_BOOL")
+	os.Args = []string{"--optionDuplicate=1.3", "--optionBool"}
+	os.Setenv("ENV_BOOL", "true")
+	os.Setenv("ENV_DUPLICATE", "12")
+	if c.Load(cf) != nil || mc.OptionString != "1.3" || mc.OptionNumber != 1.3 ||
+		!mc.OptionBool || mc.EnvString != "12" || mc.EnvNumber != 12 || !mc.EnvBool {
+		t.Error("failed to cast or to correctly parse duplicate registrations of environment variables or command line options...")
+	}
+
+	// test casting success cases
+	c.Add("EnvBool", "", "ENV_BOOL")
+	os.Setenv("ENV_BOOL", "true")
+	if c.Load(cf) != nil || !mc.EnvBool {
+		t.Error("failed to properly cast data types")
+	}
+
+	// test casting failure case
+	os.Args = []string{"--optionDuplicate=notanumber"}
+	if c.Load() == nil {
+		t.Error("failed to capture json unmarshal error...")
+	}
+
+	// test explicit depth with casting and implicit composite properties
+	c.Add("DepthByOption", "", "", "--depth")
+	c.Add("DepthByEnv", "", "ENV_DEPTH")
+	c.Add("ExplicitComposite.DepthByOption", "", "", "--depth-explicit")
+	c.Add("ExplicitComposite.DepthByEnv", "", "ENV_DEPTH_EXPLICIT")
+	c.Add("ExplicitComposite.Deeper.TripleDepth", "", "ENV_TRIPLE")
+	c.Add("TripleDepth", "", "ENV_TRIPLE")
+	os.Args = []string{"--depth", "12", "--depth-explicit=22"}
+	os.Setenv("ENV_DEPTH", "true")
+	os.Setenv("ENV_DEPTH_EXPLICIT", "true")
+	os.Setenv("ENV_TRIPLE", "depth")
+	if c.Load(cf) != nil || !mc.Composite.DepthByEnv || !mc.ExplicitComposite.DepthByEnv ||
+		mc.Composite.DepthByOption != 12 || mc.ExplicitComposite.DepthByOption != 22 ||
+		mc.Composite.Deeper.TripleDepth != "depth" {
+		t.Error("failed to handle depth with casting...")
+	}
+
+	// test overrides by input type
+	readfileData = []byte(`{"EnvOverrideFile": "one"}`)
+	c.Add("EnvOverrideFile", "", "ENV_OVERRIDE_FILE")
+	c.Add("OptionOverrideEnv", "", "ENV_OVERRIDDEN", "--option-override")
+	os.Args = []string{"--option-override=four"}
+	os.Setenv("ENV_OVERRIDE_FILE", "two")
+	os.Setenv("ENV_OVERRIDDEN", "three")
+	if c.Load(cf) != nil || mc.EnvOverrideFile != "two" || mc.OptionOverrideEnv != "four" {
+		t.Error("failed to properly order input overrides...")
+	}
+
+	// test help without description
+	exitCode = 1
+	os.Args = []string{"--help"}
+	if c.Load(cf) != nil || exitCode != 1 {
+		t.Error("failed to process -h help and exit...")
+	}
+
+	// test help with `-h`
+	exitCode = 1
+	c.Description("test help")
+	c.Example("test")
+	os.Args = []string{"--help"}
+	if c.Load(cf) != nil || exitCode != 0 {
+		t.Error("failed to process -h help and exit...")
+	}
+
+	// test help with `--help`
+	exitCode = 1
+	os.Args = []string{"--help"}
+	if c.Load(cf) != nil || exitCode != 0 {
+		t.Error("failed to process --help help and exit...")
+	}
+
+	// test help with `help`
+	exitCode = 1
+	os.Args = []string{"help"}
+	if c.Load(cf) != nil || exitCode != 0 {
+		t.Error("failed to process help and exit...")
+	}
+}
+
+func TestReload(t *testing.T) {
+	c := &Config{}
+
+	var fileStat = &mockStat{modTime: time.Now()}
+	var statError error
+	var readfileError error
+	var readfileData []byte = []byte("this is not json")
+
+	stat = func(_ string) (os.FileInfo, error) { return fileStat, statError }
+	readfile = func(string) ([]byte, error) { return readfileData, readfileError }
+
+	// test without configFile
+	if c.Reload() == nil {
+		t.Error("failed to identify empty configuration file name...")
+	}
+	c.configFile = "test.gonf.json"
+
+	// test with matching modTime
+	c.configModified = fileStat.ModTime()
+	if c.Reload() == nil {
+		t.Error("failed to capture unchanged file error...")
+	}
+	statError = mockError
+
+	// test failure to read file
+	readfileError = mockError
+	if c.Reload() == nil {
+		t.Error("failed to catch error reading file...")
+	}
+	readfileError = nil
+
+	// test failure to parse
+	if c.Reload() == nil {
+		t.Error("failed to capture parse error")
+	}
+	readfileData = []byte(`{"key": "value"}`)
+
+	// test nil target
+	if c.Reload() == nil {
+		t.Error("failed to identify nil target...")
+	}
+	c.Target(&mockConfig{})
+
+	// test expecting success
+	if e := c.Reload(); e != nil {
+		t.Error("failed to successfully parse, %s\n", e)
+	}
+}
+
+func TestSave(t *testing.T) {
+	d, e := ioutil.TempDir(os.TempDir(), "gonf")
+	if e != nil {
+		t.Error("failed to acquire temporary directory...")
+	}
+	cf := filepath.Join(d, "gonf.json")
+	defer os.Remove(cf)
+
+	var createError error
+	var createFile *os.File
+	create = func(string) (*os.File, error) { return createFile, createError }
+
+	c := &Config{}
+
+	// test with empty configFile
+	if c.Save() == nil {
+		t.Error("failed to identify empty configuration file name...")
+	}
+
+	// test bypass create error but nil target (eg. fail json encode?)
+	c.configFile = cf
+	if c.Save() == nil {
+		t.Error("failed to capture encoder error...")
+	}
+
+	// test create error behavior
+	createError = mockError
+	if c.Save() == nil {
+		t.Error("failed to capture create error...")
+	}
+
+	// test with (valid) nil target
+	createFile, createError = os.Create(cf)
+	if c.Save() != nil {
+		t.Error("failed to open temporary file for success scenarior...")
+	}
+}
+
+func TestHelp(t *testing.T) {
+	var exitCode int = 1
+	var fmtPrintfData string = ""
+
+	fmtPrintf = func(f string, a ...interface{}) (int, error) {
+		fmtPrintfData = fmt.Sprintf(f, a...)
+		return len(fmtPrintfData), nil
+	}
+	exit = func(i int) { exitCode = i }
+
+	c := &Config{}
+	c.Add("key", "description", "env", "--option")
+	c.Example("--option something")
+
+	// without description
+	c.Help()
+	if fmtPrintfData != "" && exitCode != 0 {
 		t.FailNow()
 	}
 
-	// test passing a signal
-	g.sighup <- syscall.SIGHUP
-
-	// verify file overrides default
-	filedata = `{"name": "banana"}`
-	g.Load()
-	if c.Name != "banana" {
-		t.FailNow()
-	}
-
-	// verify env overrides file /w supplied parameters to test filtering empty strings
-	os.Setenv("TEST_NAME", "hammock")
-	g.Load("", "test", "", "empty", "")
-	if c.Name != "hammock" {
-		t.FailNow()
-	}
-
-	// verify cli overrides env
-	os.Args = []string{"-ahurrah"}
-	g.Load()
-	if c.Name != "hurrah" {
+	// with description
+	c.Description("testing help output")
+	c.Help()
+	if fmtPrintfData == "" && exitCode != 0 {
 		t.FailNow()
 	}
 }
 
-func TestConfigPublicAdd(t *testing.T) {
-	o := &Config{}
-
-	// none of these should get added
-	o.Add("", "", "")
-	o.Add("nameonly", "", "")
-	o.Add("nameanddesc", "description but nothing else", "")
-	if len(o.settings) > 0 {
-		t.FailNow()
-	}
-
-	// next let's try some good ones
-	o.Add("nameandenv", "", "ENV")
-	o.Add("namedescandoptions", "description with an option", "", "-n")
-	o.Add("allfieldsplus", "all fields with multiple options", "ALLFP", "--all", "-a")
-	if len(o.settings) != 3 {
-		t.FailNow()
-	}
-}
-
-func TestConfigPublicExample(_ *testing.T) {
-	o := &Config{}
-	o.Example("Whatever")
-}
-
-func TestConfigPublicHelp(_ *testing.T) {
-	o := &Config{}
-	o.Help()
-}
-
-func TestConfigConfigFile(t *testing.T) {
-	g := Config{configFile: "test.txt"}
-	if g.ConfigFile() != g.configFile {
+func TestConfigFile(t *testing.T) {
+	c := &Config{}
+	if c.ConfigFile() != "" {
 		t.FailNow()
 	}
 }

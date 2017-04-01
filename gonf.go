@@ -14,27 +14,6 @@
 // sane default per operating system.  On windows it checks %APPDATA%,
 // on mac it checks ~/Library/Preferences, and for the rest it uses
 // $XDG_HOME_PATH with a fallback of ~/.config.
-//
-// Example
-//
-//	package main
-//	import "github.com/cdelorme/gonf"
-//	type Application struct {
-//		Path string
-//		Skip bool
-//		HowMany int `json:"number,omitempty"`
-//	}
-//	func main() {
-//		app := &Application{Path: "/tmp/default"}
-//		c := gonf.Config{Target: app, Description: "An example application"}
-//		c.Add("Path", "Path to run operations in", "APP_PATH", "-p", "--path")
-//		c.Add("Skip", "a skippable boolean (false is default)", "APP_SKIP", "-s", "--skip")
-//		c.Add("number", "number of cycles", "APP_NUMBER", "-n", "--number")
-//		c.Example("-p ~/ -sn 3")
-//		c.Example("--path=~/ --number=3")
-//		c.Load()
-//		// run your applications operations
-//	}
 package gonf
 
 import (
@@ -45,24 +24,21 @@ import (
 )
 
 var (
-	goos    = runtime.GOOS
 	appPath = os.Args[0]
 	appName = strings.TrimSuffix(filepath.Base(appPath), filepath.Ext(appPath))
 	paths   []string
 )
 
 func init() {
-	paths = []string{}
 	if p, e := filepath.EvalSymlinks(appPath); e == nil {
 		if a, e := filepath.Abs(p); e == nil {
 			paths = append(paths, filepath.Join(filepath.Dir(a)))
 		}
 	}
-
 	if appData := os.Getenv("APPDATA"); appData != "" {
 		paths = append(paths, filepath.Join(appData, "Roaming"))
 	} else if home := os.Getenv("HOME"); home != "" {
-		if goos == "darwin" {
+		if runtime.GOOS == "darwin" {
 			paths = append(paths, filepath.Join(home, "Library", "Preferences"))
 		} else if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
 			paths = append(paths, xdg)
