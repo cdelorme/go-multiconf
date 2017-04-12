@@ -446,7 +446,7 @@ func (c *Config) Save() error {
 	if c.configFile == "" {
 		return errEmptyConfig
 	}
-	mkdirall(filepath.Dir(c.configFile), 0775)
+	mkdirall(filepath.Dir(c.configFile), os.ModePerm)
 	f, err := create(c.configFile)
 	if err != nil {
 		return err
